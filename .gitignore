@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Build / release
+dist/
+build/
+
+# Bundled ffmpeg (install via install_ffmpeg.ps1 or winget)
+bin/ffmpeg.exe
+bin/ffprobe.exe
+bin/ffplay.exe
+
+# OS
+.DS_Store
+Thumbs.db
+*.lnk
+
+# IDE
+.idea/
+.vscode/
