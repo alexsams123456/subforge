@@ -13,17 +13,16 @@ SubtitleMode = Literal["soft", "burn_in"]
 
 DEFAULT_OUTPUT_FORMAT: OutputFormatId = "mp4"
 
+SOFT_SUBTITLE_FORMATS: tuple[OutputFormatId, ...] = ("mp4", "mkv", "mov", "m4v")
+
+# Форматы в UI (без AVI/WMV — soft-дорожка в них недоступна в FFmpeg).
 OUTPUT_FORMAT_ORDER: tuple[OutputFormatId, ...] = (
     "mp4",
     "mkv",
     "mov",
     "m4v",
-    "avi",
     "webm",
-    "wmv",
 )
-
-OUTPUT_FORMAT_IDS = frozenset(OUTPUT_FORMAT_ORDER)
 
 
 @dataclass(frozen=True)
@@ -79,20 +78,24 @@ _PROFILES: dict[OutputFormatId, OutputFormatProfile] = {
     "avi": OutputFormatProfile(
         format_id="avi",
         extension=".avi",
-        subtitle_mode="soft",
-        subtitle_codec="srt",
+        subtitle_mode="burn_in",
+        subtitle_codec=None,
         container_flags=(),
         fallback_video_codec="libx264",
         fallback_audio_codec="aac",
+        burn_in_video_codec="libx264",
+        burn_in_audio_codec="libmp3lame",
     ),
     "wmv": OutputFormatProfile(
         format_id="wmv",
         extension=".wmv",
-        subtitle_mode="soft",
-        subtitle_codec="srt",
+        subtitle_mode="burn_in",
+        subtitle_codec=None,
         container_flags=(),
         fallback_video_codec="wmv2",
         fallback_audio_codec="wmav2",
+        burn_in_video_codec="wmv2",
+        burn_in_audio_codec="wmav2",
     ),
     "webm": OutputFormatProfile(
         format_id="webm",
@@ -108,17 +111,33 @@ _PROFILES: dict[OutputFormatId, OutputFormatProfile] = {
 }
 
 
+OUTPUT_FORMAT_IDS = frozenset(_PROFILES.keys())
+
+_LEGACY_BURN_IN_FORMATS = frozenset({"avi", "wmv"})
+
+
 def normalize_output_format(value: str) -> OutputFormatId:
-    """Нормализовать id формата; неизвестные → mp4."""
+    """Нормализовать id формата; неизвестные и avi/wmv → mp4."""
     lowered = str(value).lower().strip()
+    if lowered in _LEGACY_BURN_IN_FORMATS:
+        return DEFAULT_OUTPUT_FORMAT
     if lowered in OUTPUT_FORMAT_IDS:
         return lowered  # type: ignore[return-value]
     return DEFAULT_OUTPUT_FORMAT
 
 
+def supports_soft_subtitles(format_id: str) -> bool:
+    """True, если формат поддерживает отключаемую soft-дорожку."""
+    profile = get_profile(format_id)
+    return profile.subtitle_mode == "soft"
+
+
 def get_profile(format_id: str) -> OutputFormatProfile:
     """Профиль mux для формата."""
-    return _PROFILES[normalize_output_format(format_id)]
+    lowered = str(format_id).lower().strip()
+    if lowered in _PROFILES:
+        return _PROFILES[lowered]  # type: ignore[return-value]
+    return _PROFILES[DEFAULT_OUTPUT_FORMAT]
 
 
 def resolve_extension(format_id: str) -> str:
@@ -154,6 +173,4 @@ def output_format_hint(format_id: str) -> str:
     fmt = normalize_output_format(format_id)
     if fmt == "webm":
         return t("output_format.hint.webm")
-    if fmt in ("avi", "wmv"):
-        return t("output_format.hint.avi_wmv")
     return t("output_format.hint.default")

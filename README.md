@@ -187,6 +187,16 @@ On processing, model download, or startup errors, details are written to a **log
 
 Copy log text when you need help diagnosing an issue.
 
+## Troubleshooting mux errors
+
+If processing fails at the **Muxing subtitles** stage:
+
+1. Try output format **MKV** instead of MP4 — some files remux more reliably with `srt` subtitles.
+2. Choose an output folder with a simple **ASCII path** (e.g. `C:\Temp\subforge_out`).
+3. Close any player that may have the output file open.
+4. Check free disk space — fallback re-encode needs extra room.
+5. Open **Log** — the message now includes both the stream-copy and re-encode errors when both fail.
+
 ## Privacy & uncensored output
 
 - All processing runs **locally** on your PC — video is never uploaded

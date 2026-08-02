@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import threading
 import tkinter as tk
@@ -14,7 +15,7 @@ from typing import Optional
 import customtkinter as ctk
 
 from app import __app_name__, __version__
-from app.services.app_log import format_log_hint, log_exception
+from app.services.app_log import format_log_hint, log_exception, log_info
 from app.services.cancellation import CancellationToken, PipelineCancelledError
 from app.services.engines import (
     DEFAULT_ENGINE_ID,
@@ -40,8 +41,11 @@ from app.services.languages import (
 from app.services.output_formats import (
     all_output_format_labels,
     format_id_to_label,
+    get_profile,
     label_to_format_id,
+    normalize_output_format,
     output_format_hint,
+    supports_soft_subtitles,
 )
 from app.services.model_status import (
     ModelStatus,
@@ -121,6 +125,9 @@ class MainWindow(ctk.CTk):
         self._cancel_token: Optional[CancellationToken] = None
         self._accel_info: Optional[AccelerationInfo] = None
         self._drag_drop_ready = False
+        self._drag_drop_failed = False
+        self._drop_queue: queue.Queue[list[str]] = queue.Queue()
+        self._drop_poll_job: Optional[str] = None
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._animate_accent()
@@ -720,6 +727,28 @@ class MainWindow(ctk.CTk):
         self.deiconify()
         self.update_idletasks()
         self._setup_drag_drop()
+        self._start_drop_polling()
+
+    def _start_drop_polling(self) -> None:
+        if self._drop_poll_job:
+            self.after_cancel(self._drop_poll_job)
+        self._poll_drop_queue()
+
+    def _poll_drop_queue(self) -> None:
+        try:
+            while True:
+                files = self._drop_queue.get_nowait()
+                log_info("drag_drop_files", f"dequeued {len(files)} path(s)")
+                self._handle_dropped_files(files)
+        except queue.Empty:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            log_exception("drag_drop_poll", exc)
+        try:
+            if self.winfo_exists():
+                self._drop_poll_job = self.after(100, self._poll_drop_queue)
+        except tk.TclError:
+            self._drop_poll_job = None
 
     def _on_bg_canvas_configure(self, event=None) -> None:
         if event is not None:
@@ -815,6 +844,12 @@ class MainWindow(ctk.CTk):
         self._anim_after_id = self.after(50, self._animate_accent)
 
     def _on_close(self) -> None:
+        if self._drop_poll_job is not None:
+            try:
+                self.after_cancel(self._drop_poll_job)
+            except Exception:
+                pass
+            self._drop_poll_job = None
         if self._anim_after_id is not None:
             try:
                 self.after_cancel(self._anim_after_id)
@@ -883,40 +918,65 @@ class MainWindow(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _setup_drag_drop(self) -> None:
-        if self._drag_drop_ready:
+        if self._drag_drop_ready or self._drag_drop_failed:
             return
         try:
-            import windnd
+            from app.ui.windnd_safe import hook_dropfiles
 
-            for widget in (self, self._drop):
-                windnd.hook_dropfiles(
-                    widget,
-                    func=self._on_files_dropped,
-                    force_unicode=True,
-                )
+            # Hook на корневое окно — из WndProc нельзя вызывать tk/CTk API (только очередь).
+            hook_dropfiles(
+                self,
+                func=self._on_files_dropped,
+                force_unicode=True,
+            )
             self._drag_drop_ready = True
+            log_info("drag_drop_setup", "hook installed on main window")
         except Exception as exc:  # noqa: BLE001
+            self._drag_drop_failed = True
             log_exception("drag_drop_setup", exc)
+            self._file_hint.configure(
+                text=t("file.formats_hint") + "\n" + t("file.drop_unavailable"),
+                wraplength=720,
+            )
 
     def _on_files_dropped(self, files) -> None:
+        """Вызывается из WndProc windnd — только положить пути в очередь."""
+        if not files:
+            return
+        try:
+            self._drop_queue.put_nowait(list(files))
+            log_info("drag_drop_files", f"queued {len(files)} path(s)")
+        except queue.Full:
+            pass
+
+    def _handle_dropped_files(self, files) -> None:
         if self._busy or not files:
             return
-        paths: list[Path] = []
-        had_invalid = False
-        for raw in files:
-            path_str = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            path = Path(path_str)
-            if self._is_supported_video(path):
-                paths.append(path)
-            else:
-                had_invalid = True
-        if not paths:
+        log_info("drag_drop_files", "handling dropped files on UI thread")
+        try:
+            paths: list[Path] = []
+            had_invalid = False
+            for raw in files:
+                path_str = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+                path = Path(path_str)
+                if self._is_supported_video(path):
+                    paths.append(path)
+                else:
+                    had_invalid = True
+            if not paths:
+                if had_invalid:
+                    messagebox.showwarning(__app_name__, t("file.drop_unsupported"))
+                return
             if had_invalid:
-                messagebox.showwarning(__app_name__, t("file.drop_unsupported"))
-            return
-        if had_invalid:
-            messagebox.showwarning(__app_name__, t("file.drop_partial"))
-        self._add_to_queue(paths)
+                messagebox.showwarning(__app_name__, t("file.drop_partial"))
+            self._add_to_queue(paths)
+            log_info("drag_drop_files", f"added {len(paths)} video(s) to queue")
+        except Exception as exc:  # noqa: BLE001
+            log_exception("drag_drop_files", exc)
+            try:
+                messagebox.showerror(__app_name__, str(exc))
+            except tk.TclError:
+                pass
 
     @staticmethod
     def _is_supported_video(path: Path) -> bool:
@@ -1208,6 +1268,11 @@ class MainWindow(ctk.CTk):
             messagebox.showerror(__app_name__, pair_error)
             return
 
+        output_format = normalize_output_format(self._output_format_id())
+        if not supports_soft_subtitles(output_format) and output_format != "webm":
+            messagebox.showerror(__app_name__, t("pipeline.soft_subs_required"))
+            return
+
         output_dir = filedialog.askdirectory(title=t("main.dialog.output_folder"))
         if not output_dir:
             return
@@ -1321,7 +1386,14 @@ class MainWindow(ctk.CTk):
                     on_progress=on_progress,
                     cancel=cancel,
                 )
-                self.after(0, lambda r=result: self._on_success(r.output_path, r.segment_count))
+                self.after(
+                    0,
+                    lambda r=result: self._on_success(
+                        r.output_path,
+                        r.segment_count,
+                        r.output_format,
+                    ),
+                )
             except PipelineCancelledError:
                 self.after(0, self._on_cancelled)
             except PipelineError as exc:
@@ -1348,7 +1420,7 @@ class MainWindow(ctk.CTk):
         self._set_busy(False)
         self._reset_progress(t("main.status.cancelled"))
 
-    def _on_success(self, output_path: Path, segment_count: int) -> None:
+    def _on_success(self, output_path: Path, segment_count: int, output_format: str) -> None:
         self._cancel_token = None
         self._output_path = output_path
 
@@ -1367,7 +1439,12 @@ class MainWindow(ctk.CTk):
         )
         self._apply_progress(snapshot)
         self._refresh_engine_status_async()
-        messagebox.showinfo(__app_name__, t("main.success"))
+        profile = get_profile(output_format)
+        if profile.subtitle_mode == "burn_in":
+            success_msg = t("main.success_burn_in", name=output_path.name)
+        else:
+            success_msg = t("main.success_soft", name=output_path.name)
+        messagebox.showinfo(__app_name__, success_msg)
 
     def _show_log_viewer(self) -> None:
         if self._log_viewer is not None and self._log_viewer.winfo_exists():

@@ -8,9 +8,11 @@ import unittest
 from app.services.output_formats import (
     DEFAULT_OUTPUT_FORMAT,
     OUTPUT_FORMAT_ORDER,
+    SOFT_SUBTITLE_FORMATS,
     get_profile,
     normalize_output_format,
     resolve_extension,
+    supports_soft_subtitles,
 )
 
 
@@ -50,7 +52,20 @@ class OutputFormatsTests(unittest.TestCase):
         self.assertEqual(profile.burn_in_video_codec, "libvpx-vp9")
         self.assertEqual(profile.burn_in_audio_codec, "libopus")
 
-    def test_wmv_fallback_codecs(self) -> None:
+    def test_normalize_migrates_avi_wmv_to_mp4(self) -> None:
+        self.assertEqual(normalize_output_format("avi"), "mp4")
+        self.assertEqual(normalize_output_format("wmv"), "mp4")
+
+    def test_ui_formats_exclude_avi_wmv(self) -> None:
+        self.assertNotIn("avi", OUTPUT_FORMAT_ORDER)
+        self.assertNotIn("wmv", OUTPUT_FORMAT_ORDER)
+        self.assertIn("webm", OUTPUT_FORMAT_ORDER)
+
+    def test_supports_soft_subtitles(self) -> None:
+        for fmt in SOFT_SUBTITLE_FORMATS:
+            self.assertTrue(supports_soft_subtitles(fmt))
+        self.assertFalse(supports_soft_subtitles("webm"))
+        self.assertFalse(supports_soft_subtitles("avi"))
         profile = get_profile("wmv")
         self.assertEqual(profile.fallback_video_codec, "wmv2")
         self.assertEqual(profile.fallback_audio_codec, "wmav2")

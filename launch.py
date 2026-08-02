@@ -23,7 +23,12 @@ def _show_error(message: str) -> None:
 
 def main() -> int:
     try:
-        from app.services.app_log import format_log_hint, log_exception, setup_app_logging
+        from app.services.app_log import (
+            format_log_hint,
+            install_uncaught_handlers,
+            log_exception,
+            setup_app_logging,
+        )
         from app.services.i18n import set_locale, t
         from app.services.settings import load_settings
         from app.ui.main_window import MainWindow
@@ -31,6 +36,7 @@ def main() -> int:
         settings = load_settings()
         set_locale(settings.ui_locale)
         setup_app_logging()
+        install_uncaught_handlers()
         app = MainWindow()
         app.mainloop()
         return 0

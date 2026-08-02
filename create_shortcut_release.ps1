@@ -2,10 +2,17 @@
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$DistExe = Join-Path $ProjectRoot "dist\SubForge\SubForge.exe"
+$DistExe = $null
+foreach ($relative in @("dist\SubForge\SubForge.exe", "dist2\SubForge\SubForge.exe")) {
+    $candidate = Join-Path $ProjectRoot $relative
+    if (Test-Path $candidate) {
+        $DistExe = $candidate
+        break
+    }
+}
 
-if (-not (Test-Path $DistExe)) {
-    Write-Error "Not found: $DistExe. Run build_exe.ps1 first."
+if (-not $DistExe) {
+    Write-Error "Not found: dist\SubForge\SubForge.exe or dist2\SubForge\SubForge.exe. Run build_exe.ps1 first."
 }
 
 $Wsh = New-Object -ComObject WScript.Shell

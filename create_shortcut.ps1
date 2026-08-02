@@ -3,11 +3,18 @@
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$DistExe = Join-Path $ProjectRoot "dist\SubForge\SubForge.exe"
+$DistExe = $null
+foreach ($relative in @("dist\SubForge\SubForge.exe", "dist2\SubForge\SubForge.exe")) {
+    $candidate = Join-Path $ProjectRoot $relative
+    if (Test-Path $candidate) {
+        $DistExe = $candidate
+        break
+    }
+}
 $PythonW = Join-Path $ProjectRoot ".venv\Scripts\pythonw.exe"
 $LaunchPy = Join-Path $ProjectRoot "launch.py"
 
-$UseRelease = Test-Path $DistExe
+$UseRelease = $null -ne $DistExe
 
 if (-not $UseRelease) {
     if (-not (Test-Path $PythonW)) {

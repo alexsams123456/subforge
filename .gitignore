@@ -10,6 +10,8 @@ htmlcov/
 
 # Build / release
 dist/
+dist2/
+dist_build/
 build/
 
 # Bundled ffmpeg (install via install_ffmpeg.ps1 or winget)

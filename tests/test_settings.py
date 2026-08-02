@@ -34,6 +34,10 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.output_format, "mkv")
         invalid = _normalize_settings({"output_format": "gif"})
         self.assertEqual(invalid.output_format, "mp4")
+        migrated = _normalize_settings({"output_format": "avi"})
+        self.assertEqual(migrated.output_format, "mp4")
+        migrated_wmv = _normalize_settings({"output_format": "wmv"})
+        self.assertEqual(migrated_wmv.output_format, "mp4")
 
     def test_normalize_invalid_values(self) -> None:
         settings = _normalize_settings(

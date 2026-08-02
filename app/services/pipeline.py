@@ -12,13 +12,14 @@ from typing import Callable, Optional
 from app.services import ffmpeg_service
 from app.services.cancellation import CancellationToken, PipelineCancelledError
 from app.services.engines import DEFAULT_ENGINE_ID, resolve_engine
-from app.services.ffmpeg_service import FFmpegError, NoAudioStreamError
+from app.services.app_log import log_info
+from app.services.ffmpeg_service import FFmpegError, NoAudioStreamError, MIN_SRT_BYTES
 from app.services.i18n import t
 from app.services.progress import ProgressSnapshot, ProgressTracker
 from app.services.diarization import DiarizationError, assign_speakers
 from app.services.languages import validate_language_pair, whisper_task
 from app.services.non_speech_filter import filter_non_speech_segments
-from app.services.output_formats import DEFAULT_OUTPUT_FORMAT, get_profile, normalize_output_format
+from app.services.output_formats import DEFAULT_OUTPUT_FORMAT, get_profile, normalize_output_format, supports_soft_subtitles
 from app.services.subtitle_format import DEFAULT_MAX_LINES, format_subtitles
 from app.services.subtitle_timing import normalize_subtitle_timing
 from app.services.transcription import TranscriptionError, WhisperTranscriber, write_srt
@@ -35,6 +36,7 @@ ProgressCallback = Optional[Callable[[ProgressSnapshot], None]]
 class PipelineResult:
     output_path: Path
     segment_count: int
+    output_format: str
 
 
 class SubtitlePipeline:
@@ -63,6 +65,9 @@ class SubtitlePipeline:
             raise PipelineError(t("pipeline.file_not_found", path=input_video))
 
         output_format = normalize_output_format(output_format)
+        if not supports_soft_subtitles(output_format) and output_format != "webm":
+            raise PipelineError(t("pipeline.soft_subs_required"))
+
         profile = get_profile(output_format)
         expected_suffix = profile.extension.lower()
         if output_video.suffix.lower() != expected_suffix:
@@ -174,11 +179,25 @@ class SubtitlePipeline:
             )
             display_segments = normalize_subtitle_timing(display_segments)
             write_srt(display_segments, srt_path)
+
+            cue_count = len(display_segments)
+            srt_size = srt_path.stat().st_size if srt_path.is_file() else 0
+            preview = ""
+            if display_segments:
+                preview = display_segments[0].text.replace("\n", " ")[:80]
+            log_info(
+                "pipeline.srt_done",
+                f"cue_count={cue_count} bytes={srt_size} preview={preview!r}",
+            )
+
+            if cue_count <= 0 or srt_size < MIN_SRT_BYTES:
+                raise PipelineError(t("pipeline.empty_srt"))
+
             tracker.complete(
                 "srt",
                 t(
                     "pipeline.srt_done",
-                    count=len(display_segments),
+                    count=cue_count,
                     max_lines=max_subtitle_lines,
                 ),
             )
@@ -186,6 +205,13 @@ class SubtitlePipeline:
             if cancel:
                 cancel.check()
 
+            log_info(
+                "pipeline.mux_start",
+                (
+                    f"format={output_format} mode={profile.subtitle_mode} "
+                    f"in={input_video} out={output_video}"
+                ),
+            )
             tracker.begin("mux", t("pipeline.mux_start"))
 
             def mux_progress(ratio: float) -> None:
@@ -205,14 +231,28 @@ class SubtitlePipeline:
             except PipelineCancelledError:
                 raise
             except FFmpegError as exc:
+                if output_video.exists():
+                    output_video.unlink(missing_ok=True)
                 raise PipelineError(t("pipeline.mux_fail", error=exc)) from exc
+            log_info(
+                "pipeline.mux_done",
+                f"path={output_video} format={output_format} cues={cue_count}",
+            )
             tracker.complete("mux", t("pipeline.mux_done"))
 
             if on_progress:
                 tracker.update("mux", 1.0, t("stage.done"))
-            return PipelineResult(output_path=output_video, segment_count=len(segments))
+            return PipelineResult(
+                output_path=output_video,
+                segment_count=cue_count,
+                output_format=output_format,
+            )
         except PipelineCancelledError:
             if output_video.exists():
+                output_video.unlink(missing_ok=True)
+            raise
+        except PipelineError:
+            if output_video.exists() and not output_video.stat().st_size:
                 output_video.unlink(missing_ok=True)
             raise
         finally:

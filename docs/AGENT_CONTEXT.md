@@ -44,6 +44,8 @@ addSub/
     test_eta.py                # unit-тесты EtaEstimator
     test_batch_queue.py        # unit-тесты пакетной очереди
     test_runtime_paths.py      # unit-тесты frozen/dev путей
+    test_ffmpeg_mux_integration.py  # интеграционные тесты mux (в т.ч. video-only)
+    test_ffmpeg_error.py         # unit-тесты _short_ffmpeg_error и compound mux errors
   app/
     __init__.py           # __app_name__, __version__
     runtime_paths.py      # app_dir, locale_dir, bin_dir (dev / PyInstaller)
@@ -217,11 +219,13 @@ flowchart TD
 - `describe_media_streams()` — сводка потоков для журнала
 - `NoAudioStreamError` — видео без встроенного звука (часто после Topaz *_prob4*)
 - Параметр `audio_source` в `pipeline.process()` — звук из другого файла, субтитры в `input_video`
-- `_short_ffmpeg_error()` — короткое сообщение вместо полного stderr ffmpeg
+- `_short_ffmpeg_error()` — короткое сообщение вместо полного stderr ffmpeg (приоритет строкам Error/Invalid; без progress-хвоста `frame=0`)
+- `_format_mux_errors()` — compound-сообщение при падении copy и fallback mux
+- `_include_audio_in_mux()` / `_build_soft_mux_cmd()` — audio `-map`/`-c:a` только если ffprobe видит аудиодорожку
 - `_run_with_progress()` — парсит `time=HH:MM:SS.ms` из stderr; при `cancel.is_cancelled` — `proc.kill()`
 - `mux_subtitles()` — mux по `OutputFormatProfile` из `output_formats.py`
 - `mux_soft_subtitles()` — обёртка для MP4 (совместимость)
-- Soft: MP4/M4V/MOV → `mov_text`; MKV/AVI/WMV → `srt`; copy → fallback encode
+- Soft: MP4/M4V/MOV → `mov_text`; MKV/AVI/WMV → `srt`; copy → fallback encode (обе ошибки в UI/журнале)
 - WebM: burn-in через `-vf subtitles=...`, VP9 + Opus (отдельной дорожки нет)
 - `get_media_duration()` — ffprobe рядом с ffmpeg
 - Таймауты: проверка 12с, команды 600с
@@ -266,7 +270,7 @@ flowchart TD
 - Кнопка **«Отмена»** — `CancellationToken` в worker-потоке; `_on_cancelled()` без диалога ошибки
 - Фоновый canvas: `_on_bg_canvas_configure` / `_ensure_atmosphere_items` / `_update_accent_pulse` — без `delete("all")` на каждый кадр
 - `_ffmpeg_ok` — блокирует старт без ffmpeg
-- **Drag-and-drop** видео: `windnd.hook_dropfiles` на root и `_drop` (`force_unicode=True`) — хук ставится **после** показа окна в `_present_window`, не в `__init__`; ошибки setup → `log_exception("drag_drop_setup")`; все валидные файлы **добавляются в очередь**
+- **Drag-and-drop** видео: `windnd.hook_dropfiles` только на **корневое окно** (`self`, `force_unicode=True`); хук ставится **после** показа окна в `_present_window`, не в `__init__`. Из WndProc — только `put_nowait` в `_drop_queue`; UI обновляется через `_poll_drop_queue()` каждые 100 ms. Ошибки setup → `log_exception("drag_drop_setup")`; валидные файлы **добавляются в очередь**
 - **Очередь видео**: `_queue: list[Path]`, список в UI, multi-select в диалоге выбора
 - **Пакетная обработка**: «Создать субтитры» → `askdirectory` → preflight (файлы существуют, есть аудио) → `build_jobs` → последовательный `_launch_pipeline`; при ошибке или отмене — **вся очередь останавливается**
 - **ETA**: `EtaEstimator` в `_apply_progress`, метка в `StageProgressPanel` (`progress.eta_remaining`, позиция `File N / M`)
