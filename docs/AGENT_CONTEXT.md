@@ -220,15 +220,18 @@ flowchart TD
 - `NoAudioStreamError` — видео без встроенного звука (часто после Topaz *_prob4*)
 - Параметр `audio_source` в `pipeline.process()` — звук из другого файла, субтитры в `input_video`
 - `_short_ffmpeg_error()` — короткое сообщение вместо полного stderr ffmpeg (приоритет строкам Error/Invalid; без progress-хвоста `frame=0`)
-- `_format_mux_errors()` — compound-сообщение при падении copy и fallback mux
-- `_include_audio_in_mux()` / `_build_soft_mux_cmd()` — audio `-map`/`-c:a` только если ffprobe видит аудиодорожку
-- `_run_with_progress()` — парсит `time=HH:MM:SS.ms` из stderr; при `cancel.is_cancelled` — `proc.kill()`
+- `_format_mux_errors()` — compound-сообщение при падении одной или нескольких попыток mux; hint для больших MP4 при `-22`
+- `_estimate_mux_output_bytes()` / `_check_output_disk_space()` — preflight места на томе выхода (~2× размер видео под faststart)
+- `_safe_unlink_output()` — удаление битого выхода между попытками
+- `_include_audio_in_mux()` / `_build_soft_mux_cmd(use_faststart=…)` — audio `-map`/`-c:a` только если ffprobe видит аудиодорожку
+- `_run_with_progress(log_context=…)` — парсит `time=HH:MM:SS.ms` из stderr; при ошибке полный stderr (до 12 KB) в `subforge.log`; при `cancel.is_cancelled` — `proc.kill()`
+- `copy_mux_timeout()` — для больших/длинных файлов таймаут copy-mux как у re-encode (до 4 ч)
 - `mux_subtitles()` — mux по `OutputFormatProfile` из `output_formats.py`
 - `mux_soft_subtitles()` — обёртка для MP4 (совместимость)
-- Soft: MP4/M4V/MOV → `mov_text`; MKV/AVI/WMV → `srt`; copy → fallback encode (обе ошибки в UI/журнале)
+- Soft MP4/MOV/M4V: **copy + faststart** → **copy без faststart** → **re-encode + faststart**; MKV → `srt`; все ошибки в UI/журнале
 - WebM: burn-in через `-vf subtitles=...`, VP9 + Opus (отдельной дорожки нет)
 - `get_media_duration()` — ffprobe рядом с ffmpeg
-- Таймауты: проверка 12с, команды 600с
+- Таймауты: проверка 12с; короткие команды 600с; copy/re-encode больших роликов — до 4 ч (`encode_timeout`)
 
 ### `model_status.py`
 - `get_model_status()` — `download_model(..., local_files_only=True)`

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.services.output_formats import get_profile
 from app.services.ffmpeg_service import (
+    _build_soft_mux_cmd,
     burn_in_frame_differs,
     count_subtitle_streams,
     find_ffmpeg,
@@ -146,6 +147,23 @@ class FfmpegMuxIntegrationTests(unittest.TestCase):
         )
         self.assertTrue(output.is_file())
         self.assertGreater(_ffprobe_subtitle_streams(output), 0)
+
+    def test_build_soft_mux_cmd_without_faststart(self) -> None:
+        profile = get_profile("mp4")
+        cmd = _build_soft_mux_cmd(
+            self._ffmpeg,
+            self._source,
+            self._srt,
+            self._work / "out.mp4",
+            profile,
+            "en",
+            video_codec="copy",
+            include_audio=True,
+            audio_codec="copy",
+            use_faststart=False,
+        )
+        self.assertNotIn("-movflags", cmd)
+        self.assertNotIn("+faststart", cmd)
 
 
 if __name__ == "__main__":

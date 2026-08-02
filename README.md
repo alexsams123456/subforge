@@ -191,11 +191,11 @@ Copy log text when you need help diagnosing an issue.
 
 If processing fails at the **Muxing subtitles** stage:
 
-1. Try output format **MKV** instead of MP4 — some files remux more reliably with `srt` subtitles.
-2. Choose an output folder with a simple **ASCII path** (e.g. `C:\Temp\subforge_out`).
-3. Close any player that may have the output file open.
-4. Check free disk space — fallback re-encode needs extra room.
-5. Open **Log** — the message now includes both the stream-copy and re-encode errors when both fail.
+1. **Free disk space** — for large **MP4** outputs (~4 GB+), keep roughly **2× the video size** free on the output drive. SubForge uses `-movflags +faststart`, which may need a temporary second copy during mux.
+2. Try output format **MKV** instead of MP4 — no faststart pass; soft `srt` track remuxes reliably for many files.
+3. Choose an output folder with a simple **ASCII path** (e.g. `C:\Temp\subforge_out`).
+4. Close any player that may have the output file open.
+5. Open **Log** — on failure the full ffmpeg stderr is saved there; the UI shows a short summary (all mux attempts when soft MP4 falls through copy → copy without faststart → re-encode).
 
 ## Privacy & uncensored output
 
@@ -206,6 +206,7 @@ If processing fails at the **Muxing subtitles** stage:
 ## Notes
 
 - Default output is **MP4** with a `mov_text` subtitle track; other formats available in settings
+- Large MP4 files (~4 GB+): ensure enough free space on the output drive (~2× file size during faststart), or use **MKV**
 - Soft subs work reliably in VLC and PotPlayer; **WebM** always shows burned-in subs
 - Status bar shows **GPU or CPU** — Whisper uses NVIDIA CUDA automatically when available
 - **ETA** (estimated time remaining) is shown during processing

@@ -68,6 +68,11 @@ COMMAND_TIMEOUT = 600
 # Burn-in / re-encode: до ~10× длительности ролика, но не меньше COMMAND_TIMEOUT.
 ENCODE_TIMEOUT_FACTOR = 10
 MAX_ENCODE_TIMEOUT = 14_400  # 4 ч
+_MUX_DISK_HEADROOM_BYTES = 512 * 1024 * 1024
+_LARGE_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
+_LARGE_VIDEO_HINT_BYTES = 4 * 1024 * 1024 * 1024
+_LONG_DURATION_SEC = 3600.0
+_FFMPEG_STDERR_LOG_LIMIT = 12_000
 
 
 def encode_timeout(duration: Optional[float]) -> float:
@@ -76,6 +81,58 @@ def encode_timeout(duration: Optional[float]) -> float:
         return float(COMMAND_TIMEOUT)
     scaled = duration * ENCODE_TIMEOUT_FACTOR + COMMAND_TIMEOUT
     return min(float(MAX_ENCODE_TIMEOUT), max(float(COMMAND_TIMEOUT), scaled))
+
+
+def copy_mux_timeout(duration: Optional[float], video_path: Path) -> float:
+    """Таймаут ffmpeg для copy-mux (в т.ч. second pass faststart на больших файлах)."""
+    if duration is not None and duration > _LONG_DURATION_SEC:
+        return encode_timeout(duration)
+    if video_path.is_file() and video_path.stat().st_size > _LARGE_SOURCE_BYTES:
+        return encode_timeout(duration)
+    return float(COMMAND_TIMEOUT)
+
+
+def _format_size_gb(size_bytes: int) -> str:
+    return f"{size_bytes / (1024 ** 3):.1f}"
+
+
+def _estimate_mux_output_bytes(video_path: Path, srt_path: Path) -> int:
+    """Оценка места на диске: выход ~размер видео, faststart может временно удвоить."""
+    video_size = video_path.stat().st_size if video_path.is_file() else 0
+    srt_size = srt_path.stat().st_size if srt_path.is_file() else 0
+    return video_size * 2 + srt_size + _MUX_DISK_HEADROOM_BYTES
+
+
+def _check_output_disk_space(output_path: Path, required_bytes: int) -> None:
+    """Проверить свободное место на томе выходного файла перед mux."""
+    usage = shutil.disk_usage(output_path.parent)
+    if usage.free < required_bytes:
+        drive = output_path.drive or str(output_path.anchor) or str(output_path.parent)
+        raise FFmpegError(
+            t(
+                "ffmpeg.insufficient_disk_space",
+                required=_format_size_gb(required_bytes),
+                drive=drive,
+                available=_format_size_gb(usage.free),
+            )
+        )
+
+
+def _safe_unlink_output(output_path: Path) -> None:
+    """Удалить частичный выходной файл между попытками mux."""
+    try:
+        output_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _should_add_large_file_hint(combined_error: str, video_path: Path) -> bool:
+    if not video_path.is_file():
+        return False
+    if video_path.stat().st_size <= _LARGE_VIDEO_HINT_BYTES:
+        return False
+    lowered = combined_error.lower()
+    return "-22" in combined_error or "invalid argument" in lowered
 
 
 def _project_ffmpeg() -> Path:
@@ -311,17 +368,43 @@ def _short_ffmpeg_error(detail: str) -> str:
     return text[:500]
 
 
-def _format_mux_errors(copy_error: str | None, fallback_error: str) -> str:
-    """Сообщение при падении copy и fallback mux."""
-    combined = f"{copy_error or ''}\n{fallback_error}"
+def _format_mux_errors(
+    copy_error: str | None = None,
+    fallback_error: str | None = None,
+    *,
+    video_path: Path | None = None,
+    all_errors: list[str] | None = None,
+) -> str:
+    """Сообщение при падении одной или нескольких попыток mux."""
+    if all_errors is not None:
+        errors = [item for item in all_errors if item]
+    else:
+        errors = [item for item in (copy_error, fallback_error) if item]
+
+    if not errors:
+        return t("ffmpeg.generic_error")
+
+    combined = "\n".join(errors)
     if "Not yet implemented" in combined and "srt" in combined.lower():
         hint = t("ffmpeg.mux_soft_unsupported")
-        if copy_error:
-            return t("ffmpeg.mux_both_failed", copy=copy_error, fallback=f"{fallback_error}\n\n{hint}")
-        return f"{fallback_error}\n\n{hint}"
-    if copy_error:
-        return t("ffmpeg.mux_both_failed", copy=copy_error, fallback=fallback_error)
-    return fallback_error
+        if len(errors) >= 2:
+            message = t(
+                "ffmpeg.mux_both_failed",
+                copy=errors[0],
+                fallback=f"{errors[-1]}\n\n{hint}",
+            )
+        else:
+            message = f"{errors[0]}\n\n{hint}"
+    elif len(errors) == 1:
+        message = errors[0]
+    elif len(errors) == 2:
+        message = t("ffmpeg.mux_both_failed", copy=errors[0], fallback=errors[1])
+    else:
+        message = t("ffmpeg.mux_all_failed", detail=combined)
+
+    if video_path and _should_add_large_file_hint(combined, video_path):
+        message = f"{message}\n\n{t('ffmpeg.mux_large_file_hint')}"
+    return message
 
 
 def get_media_duration(path: Path) -> Optional[float]:
@@ -372,6 +455,7 @@ def _run_with_progress(
     on_progress: ProgressRatioCallback = None,
     timeout: float = COMMAND_TIMEOUT,
     cancel: Optional["CancellationToken"] = None,
+    log_context: str | None = None,
 ) -> str:
     from app.services.cancellation import PipelineCancelledError
 
@@ -419,6 +503,13 @@ def _run_with_progress(
 
     if proc.returncode != 0:
         detail = "".join(stderr_chunks).strip()
+        if log_context and detail:
+            from app.services.app_log import log_info
+
+            tail = detail
+            if len(tail) > _FFMPEG_STDERR_LOG_LIMIT:
+                tail = tail[-_FFMPEG_STDERR_LOG_LIMIT:]
+            log_info(log_context, tail)
         raise FFmpegError(
             _short_ffmpeg_error(detail)
             if detail
@@ -693,6 +784,7 @@ def _build_soft_mux_cmd(
     include_audio: bool,
     audio_codec: str | None = None,
     video_encode_preset: tuple[str, ...] = (),
+    use_faststart: bool = True,
 ) -> list[str]:
     cmd = [
         ffmpeg,
@@ -713,9 +805,30 @@ def _build_soft_mux_cmd(
         if audio_codec == "aac":
             cmd.extend(["-b:a", "192k"])
     cmd.extend(_subtitle_mux_args(profile, lang))
-    _append_container_flags(cmd, profile)
+    if use_faststart:
+        _append_container_flags(cmd, profile)
     cmd.append(str(output_path))
     return cmd
+
+
+def _run_soft_mux_attempt(
+    cmd: list[str],
+    *,
+    duration: Optional[float],
+    on_progress: ProgressRatioCallback,
+    timeout: float,
+    cancel: Optional["CancellationToken"],
+    log_context: str,
+) -> None:
+    """Запустить одну попытку soft-mux с полным stderr в журнале при ошибке."""
+    _run_with_progress(
+        cmd,
+        duration=duration,
+        on_progress=on_progress,
+        timeout=timeout,
+        cancel=cancel,
+        log_context=log_context,
+    )
 
 
 def _mux_soft_subtitles(
@@ -730,49 +843,83 @@ def _mux_soft_subtitles(
     cancel: Optional["CancellationToken"],
 ) -> None:
     include_audio = _include_audio_in_mux(video_path, ffmpeg)
+    required_bytes = _estimate_mux_output_bytes(video_path, srt_path)
+    _check_output_disk_space(output_path, required_bytes)
 
-    copy_cmd = _build_soft_mux_cmd(
-        ffmpeg,
-        video_path,
-        srt_path,
-        output_path,
-        profile,
-        lang,
-        video_codec="copy",
-        include_audio=include_audio,
-        audio_codec="copy" if include_audio else None,
-    )
+    copy_timeout = copy_mux_timeout(duration, video_path)
+    encode_timeout_sec = encode_timeout(duration)
+    errors: list[str] = []
 
-    copy_error: str | None = None
-    try:
-        _run_with_progress(copy_cmd, duration=duration, on_progress=on_progress, cancel=cancel)
-        return
-    except FFmpegError as exc:
-        copy_error = str(exc)
+    attempts: list[tuple[str, list[str], float]] = [
+        (
+            "mux.copy_faststart",
+            _build_soft_mux_cmd(
+                ffmpeg,
+                video_path,
+                srt_path,
+                output_path,
+                profile,
+                lang,
+                video_codec="copy",
+                include_audio=include_audio,
+                audio_codec="copy" if include_audio else None,
+                use_faststart=True,
+            ),
+            copy_timeout,
+        ),
+        (
+            "mux.copy",
+            _build_soft_mux_cmd(
+                ffmpeg,
+                video_path,
+                srt_path,
+                output_path,
+                profile,
+                lang,
+                video_codec="copy",
+                include_audio=include_audio,
+                audio_codec="copy" if include_audio else None,
+                use_faststart=False,
+            ),
+            copy_timeout,
+        ),
+        (
+            "mux.encode",
+            _build_soft_mux_cmd(
+                ffmpeg,
+                video_path,
+                srt_path,
+                output_path,
+                profile,
+                lang,
+                video_codec=profile.fallback_video_codec,
+                include_audio=include_audio,
+                audio_codec=profile.fallback_audio_codec if include_audio else None,
+                video_encode_preset=("-preset", "fast", "-crf", "20"),
+                use_faststart=True,
+            ),
+            encode_timeout_sec,
+        ),
+    ]
 
-    encode_cmd = _build_soft_mux_cmd(
-        ffmpeg,
-        video_path,
-        srt_path,
-        output_path,
-        profile,
-        lang,
-        video_codec=profile.fallback_video_codec,
-        include_audio=include_audio,
-        audio_codec=profile.fallback_audio_codec if include_audio else None,
-        video_encode_preset=("-preset", "fast", "-crf", "20"),
-    )
+    for log_context, cmd, timeout in attempts:
+        _safe_unlink_output(output_path)
+        try:
+            _run_soft_mux_attempt(
+                cmd,
+                duration=duration,
+                on_progress=on_progress,
+                timeout=timeout,
+                cancel=cancel,
+                log_context=log_context,
+            )
+            return
+        except FFmpegError as exc:
+            errors.append(str(exc))
 
-    try:
-        _run_with_progress(
-            encode_cmd,
-            duration=duration,
-            on_progress=on_progress,
-            timeout=encode_timeout(duration),
-            cancel=cancel,
-        )
-    except FFmpegError as exc:
-        raise FFmpegError(_format_mux_errors(copy_error, str(exc))) from exc
+    raise FFmpegError(
+        _format_mux_errors(all_errors=errors, video_path=video_path)
+    ) from None
 
 
 def _burn_in_encode_args(video_codec: str, audio_codec: str) -> list[str]:
