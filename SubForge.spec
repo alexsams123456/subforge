@@ -2,10 +2,12 @@
 """PyInstaller spec: SubForge onedir + CUDA (torch, ctranslate2)."""
 
 from pathlib import Path
+import sys
 
-from PyInstaller.utils.hooks import collect_all, collect_data_files
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 project_root = Path(SPECPATH)
+sys.path.insert(0, str(project_root))
 
 locale_datas = [
     (str(project_root / "app" / "locale" / name), "app/locale")
@@ -24,6 +26,7 @@ hiddenimports = [
     "windnd",
     "PIL",
     "PIL._tkinter_finder",
+    *collect_submodules("app"),
 ]
 
 for package in ("ctranslate2", "torch", "torchaudio", "speechbrain", "faster_whisper"):

@@ -14,6 +14,7 @@ from typing import Callable, Optional, TYPE_CHECKING
 from app.runtime_paths import bin_dir
 from app.services.i18n import t
 from app.services.languages import normalize_for_ffmpeg
+from app.services.output_formats import OutputFormatProfile, get_profile
 
 if TYPE_CHECKING:
     from app.services.cancellation import CancellationToken
@@ -406,11 +407,22 @@ def extract_audio(
     )
 
 
-def _subtitle_mux_args(lang: str) -> list[str]:
+def _subtitle_filter_path(srt_path: Path) -> str:
+    """Путь SRT для фильтра subtitles= на Windows."""
+    resolved = srt_path.resolve()
+    text = str(resolved).replace("\\", "/")
+    text = text.replace(":", "\\:")
+    text = text.replace("'", "\\'")
+    return text
+
+
+def _subtitle_mux_args(profile: OutputFormatProfile, lang: str) -> list[str]:
     """Аргументы ffmpeg для soft-субтитров, видимых при открытии видео."""
+    if profile.subtitle_codec is None:
+        return []
     return [
         "-c:s",
-        "mov_text",
+        profile.subtitle_codec,
         "-metadata:s:s:0",
         f"language={lang}",
         "-metadata:s:s:0",
@@ -420,20 +432,21 @@ def _subtitle_mux_args(lang: str) -> list[str]:
     ]
 
 
-def mux_soft_subtitles(
+def _append_container_flags(cmd: list[str], profile: OutputFormatProfile) -> None:
+    cmd.extend(profile.container_flags)
+
+
+def _mux_soft_subtitles(
+    ffmpeg: str,
     video_path: Path,
     srt_path: Path,
     output_path: Path,
-    language: str = "rus",
-    on_progress: ProgressRatioCallback = None,
-    cancel: Optional["CancellationToken"] = None,
+    profile: OutputFormatProfile,
+    lang: str,
+    duration: Optional[float],
+    on_progress: ProgressRatioCallback,
+    cancel: Optional["CancellationToken"],
 ) -> None:
-    """Вшить soft-субтитры (mov_text) в MP4."""
-    ffmpeg = find_ffmpeg()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    duration = get_media_duration(video_path)
-    lang = normalize_for_ffmpeg(language)
-
     copy_cmd = [
         ffmpeg,
         "-y",
@@ -451,11 +464,10 @@ def mux_soft_subtitles(
         "copy",
         "-c:a",
         "copy",
-        *_subtitle_mux_args(lang),
-        "-movflags",
-        "+faststart",
-        str(output_path),
+        *_subtitle_mux_args(profile, lang),
     ]
+    _append_container_flags(copy_cmd, profile)
+    copy_cmd.append(str(output_path))
 
     try:
         _run_with_progress(copy_cmd, duration=duration, on_progress=on_progress, cancel=cancel)
@@ -477,18 +489,114 @@ def mux_soft_subtitles(
         "-map",
         "1:0",
         "-c:v",
-        "libx264",
+        profile.fallback_video_codec,
         "-preset",
         "fast",
         "-crf",
         "20",
         "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        *_subtitle_mux_args(lang),
-        "-movflags",
-        "+faststart",
-        str(output_path),
+        profile.fallback_audio_codec,
     ]
+    if profile.fallback_audio_codec == "aac":
+        encode_cmd.extend(["-b:a", "192k"])
+    encode_cmd.extend(_subtitle_mux_args(profile, lang))
+    _append_container_flags(encode_cmd, profile)
+    encode_cmd.append(str(output_path))
     _run_with_progress(encode_cmd, duration=duration, on_progress=on_progress, cancel=cancel)
+
+
+def _mux_burn_in_subtitles(
+    ffmpeg: str,
+    video_path: Path,
+    srt_path: Path,
+    output_path: Path,
+    profile: OutputFormatProfile,
+    duration: Optional[float],
+    on_progress: ProgressRatioCallback,
+    cancel: Optional["CancellationToken"],
+) -> None:
+    video_codec = profile.burn_in_video_codec or profile.fallback_video_codec
+    audio_codec = profile.burn_in_audio_codec or profile.fallback_audio_codec
+    sub_path = _subtitle_filter_path(srt_path)
+
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"subtitles='{sub_path}'",
+        "-c:v",
+        video_codec,
+        "-crf",
+        "30",
+        "-b:v",
+        "0",
+        "-c:a",
+        audio_codec,
+    ]
+    _append_container_flags(cmd, profile)
+    cmd.append(str(output_path))
+    _run_with_progress(cmd, duration=duration, on_progress=on_progress, cancel=cancel)
+
+
+def mux_subtitles(
+    video_path: Path,
+    srt_path: Path,
+    output_path: Path,
+    language: str = "rus",
+    output_format: str = "mp4",
+    on_progress: ProgressRatioCallback = None,
+    cancel: Optional["CancellationToken"] = None,
+) -> None:
+    """Вшить субтитры в видео согласно профилю формата."""
+    profile = get_profile(output_format)
+    ffmpeg = find_ffmpeg()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    duration = get_media_duration(video_path)
+    lang = normalize_for_ffmpeg(language)
+
+    if profile.subtitle_mode == "burn_in":
+        _mux_burn_in_subtitles(
+            ffmpeg,
+            video_path,
+            srt_path,
+            output_path,
+            profile,
+            duration,
+            on_progress,
+            cancel,
+        )
+        return
+
+    _mux_soft_subtitles(
+        ffmpeg,
+        video_path,
+        srt_path,
+        output_path,
+        profile,
+        lang,
+        duration,
+        on_progress,
+        cancel,
+    )
+
+
+def mux_soft_subtitles(
+    video_path: Path,
+    srt_path: Path,
+    output_path: Path,
+    language: str = "rus",
+    on_progress: ProgressRatioCallback = None,
+    cancel: Optional["CancellationToken"] = None,
+) -> None:
+    """Вшить soft-субтитры (mov_text) в MP4 — совместимость."""
+    mux_subtitles(
+        video_path,
+        srt_path,
+        output_path,
+        language=language,
+        output_format="mp4",
+        on_progress=on_progress,
+        cancel=cancel,
+    )

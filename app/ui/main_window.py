@@ -37,6 +37,12 @@ from app.services.languages import (
     ui_label_to_code,
     validate_language_pair,
 )
+from app.services.output_formats import (
+    all_output_format_labels,
+    format_id_to_label,
+    label_to_format_id,
+    output_format_hint,
+)
 from app.services.model_status import (
     ModelStatus,
     all_engines_status,
@@ -77,6 +83,7 @@ SUPPORTED_VIDEO_SUFFIXES = frozenset(
 class MainWindow(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
+        self.withdraw()
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
@@ -113,11 +120,11 @@ class MainWindow(ctk.CTk):
         self._log_viewer: Optional[LogViewerWindow] = None
         self._cancel_token: Optional[CancellationToken] = None
         self._accel_info: Optional[AccelerationInfo] = None
+        self._drag_drop_ready = False
         self._build_ui()
-        self._setup_drag_drop()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._animate_accent()
-        self.after(0, self._maximize_window)
+        self.after_idle(self._present_window)
         self.after(200, self._check_ffmpeg_async)
         self.after(250, self._refresh_engine_status_async)
         self.after(300, self._check_acceleration_async)
@@ -374,6 +381,50 @@ class MainWindow(ctk.CTk):
         )
         subs_row.grid_columnconfigure(1, weight=1)
 
+        self._lbl_output_format = ctk.CTkLabel(
+            subs_row,
+            text=t("settings.output_format"),
+            font=font_tuple("small"),
+            text_color=COLORS["text_dim"],
+            anchor="w",
+        )
+        self._lbl_output_format.grid(row=0, column=0, sticky="w")
+
+        self._output_format_var = ctk.StringVar(
+            value=format_id_to_label(self._settings.output_format)
+        )
+        self._output_format_menu = ctk.CTkOptionMenu(
+            subs_row,
+            values=all_output_format_labels(),
+            variable=self._output_format_var,
+            width=CONTROL["menu_width"],
+            height=CONTROL["menu_height"],
+            corner_radius=CONTROL["corner"],
+            fg_color=COLORS["bg_elevated"],
+            button_color=COLORS["border"],
+            button_hover_color=COLORS["accent_dim"],
+            dropdown_fg_color=COLORS["bg_panel"],
+            font=font_tuple("body"),
+            command=self._on_output_format_change,
+        )
+        self._output_format_menu.grid(row=0, column=1, sticky="w", padx=(SPACE["row"], 0))
+
+        self._output_format_hint = ctk.CTkLabel(
+            subs_row,
+            text=output_format_hint(self._settings.output_format),
+            font=font_tuple("small"),
+            text_color=COLORS["text_dim"],
+            anchor="w",
+            wraplength=420,
+        )
+        self._output_format_hint.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(SPACE["field"], 0),
+        )
+
         self._lbl_max_lines = ctk.CTkLabel(
             subs_row,
             text=t("settings.max_lines"),
@@ -381,7 +432,7 @@ class MainWindow(ctk.CTk):
             text_color=COLORS["text_dim"],
             anchor="w",
         )
-        self._lbl_max_lines.grid(row=0, column=0, sticky="w")
+        self._lbl_max_lines.grid(row=2, column=0, sticky="w", pady=(SPACE["field"], 0))
 
         self._lines_var = ctk.StringVar(value=str(self._settings.max_subtitle_lines))
         self._lines_menu = ctk.CTkOptionMenu(
@@ -398,7 +449,7 @@ class MainWindow(ctk.CTk):
             font=font_tuple("body"),
             command=self._on_processing_setting_change,
         )
-        self._lines_menu.grid(row=0, column=1, sticky="w", padx=(SPACE["row"], 0))
+        self._lines_menu.grid(row=2, column=1, sticky="w", padx=(SPACE["row"], 0))
 
         self._speakers_var = ctk.BooleanVar(value=self._settings.separate_speakers)
         self._speakers_switch = ctk.CTkSwitch(
@@ -412,7 +463,7 @@ class MainWindow(ctk.CTk):
             button_hover_color=COLORS["accent_dim"],
             command=self._on_processing_setting_change,
         )
-        self._speakers_switch.grid(row=1, column=0, columnspan=2, sticky="w", pady=(SPACE["field"], 0))
+        self._speakers_switch.grid(row=3, column=0, columnspan=2, sticky="w", pady=(SPACE["field"], 0))
 
         self._non_speech_var = ctk.BooleanVar(value=self._settings.hide_non_speech)
         self._non_speech_switch = ctk.CTkSwitch(
@@ -426,7 +477,9 @@ class MainWindow(ctk.CTk):
             button_hover_color=COLORS["accent_dim"],
             command=self._on_processing_setting_change,
         )
-        self._non_speech_switch.grid(row=2, column=0, columnspan=2, sticky="w", pady=(SPACE["field"], 0))
+        self._non_speech_switch.grid(row=4, column=0, columnspan=2, sticky="w", pady=(SPACE["field"], 0))
+
+        self._update_output_format_hint()
 
         status_block = ctk.CTkFrame(content, fg_color="transparent")
         status_block.grid(row=3, column=0, sticky="ew", pady=(0, SPACE["section"]))
@@ -584,6 +637,7 @@ class MainWindow(ctk.CTk):
         self._lbl_engine.configure(text=t("settings.engine"))
         self._lbl_speech.configure(text=t("settings.speech_language"))
         self._lbl_subtitle.configure(text=t("settings.subtitle_language"))
+        self._lbl_output_format.configure(text=t("settings.output_format"))
         self._lbl_max_lines.configure(text=t("settings.max_lines"))
         self._speakers_switch.configure(text=t("settings.separate_speakers"))
         self._non_speech_switch.configure(text=t("settings.hide_non_speech"))
@@ -598,6 +652,11 @@ class MainWindow(ctk.CTk):
         self._engine_menu.configure(values=all_engine_labels())
         self._engine_var.set(engine_label(engine_id))
         self._engine_hint.configure(text=engine_description(engine_id))
+
+        self._output_format_menu.configure(values=all_output_format_labels())
+        fmt_id = self._output_format_id()
+        self._output_format_var.set(format_id_to_label(fmt_id))
+        self._update_output_format_hint()
 
         if not self._queue:
             self._file_title.configure(text=t("file.no_video"))
@@ -631,16 +690,36 @@ class MainWindow(ctk.CTk):
         self._settings.max_subtitle_lines = self._max_subtitle_lines()
         self._settings.separate_speakers = bool(self._speakers_var.get())
         self._settings.hide_non_speech = bool(self._non_speech_var.get())
+        self._settings.output_format = self._output_format_id()
         save_settings(self._settings)
+
+    def _on_output_format_change(self, *_args) -> None:
+        self._update_output_format_hint()
+        self._on_processing_setting_change()
+
+    def _update_output_format_hint(self) -> None:
+        hint = output_format_hint(self._output_format_id())
+        self._output_format_hint.configure(text=hint)
+        if hint:
+            self._output_format_hint.grid()
+        else:
+            self._output_format_hint.grid_remove()
 
     def _on_processing_setting_change(self, *_args) -> None:
         if self._busy:
             return
         self._persist_settings()
 
-    def _maximize_window(self) -> None:
+    def _present_window(self) -> None:
         self.update_idletasks()
-        self.state("zoomed")
+        w, h = 840, 620
+        x = (self.winfo_screenwidth() - w) // 2
+        y = (self.winfo_screenheight() - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self._on_bg_canvas_configure()
+        self.deiconify()
+        self.update_idletasks()
+        self._setup_drag_drop()
 
     def _on_bg_canvas_configure(self, event=None) -> None:
         if event is not None:
@@ -754,6 +833,9 @@ class MainWindow(ctk.CTk):
     def _engine_id(self) -> str:
         return label_to_id(self._engine_var.get())
 
+    def _output_format_id(self) -> str:
+        return label_to_format_id(self._output_format_var.get())
+
     def _max_subtitle_lines(self) -> int:
         try:
             value = int(self._lines_var.get())
@@ -801,12 +883,20 @@ class MainWindow(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _setup_drag_drop(self) -> None:
+        if self._drag_drop_ready:
+            return
         try:
             import windnd
 
-            windnd.hook_dropfiles(self, func=self._on_files_dropped)
-        except Exception:
-            pass
+            for widget in (self, self._drop):
+                windnd.hook_dropfiles(
+                    widget,
+                    func=self._on_files_dropped,
+                    force_unicode=True,
+                )
+            self._drag_drop_ready = True
+        except Exception as exc:  # noqa: BLE001
+            log_exception("drag_drop_setup", exc)
 
     def _on_files_dropped(self, files) -> None:
         if self._busy or not files:
@@ -1126,7 +1216,11 @@ class MainWindow(ctk.CTk):
         if not self._preflight_batch(self._queue):
             return
 
-        self._batch_jobs = build_jobs(self._queue, output_dir_path)
+        self._batch_jobs = build_jobs(
+            self._queue,
+            output_dir_path,
+            output_format=self._output_format_id(),
+        )
         self._batch_index = 0
         self._batch_active = True
         self._batch_output_dir = output_dir_path
@@ -1204,6 +1298,7 @@ class MainWindow(ctk.CTk):
         max_lines = self._max_subtitle_lines()
         separate_speakers = bool(self._speakers_var.get())
         hide_non_speech = bool(self._non_speech_var.get())
+        output_format = self._output_format_id()
         source = input_video
         cancel = self._cancel_token
 
@@ -1221,6 +1316,7 @@ class MainWindow(ctk.CTk):
                     max_subtitle_lines=max_lines,
                     separate_speakers=separate_speakers,
                     hide_non_speech=hide_non_speech,
+                    output_format=output_format,
                     audio_source=audio_source,
                     on_progress=on_progress,
                     cancel=cancel,

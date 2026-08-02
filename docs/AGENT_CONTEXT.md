@@ -260,13 +260,13 @@ flowchart TD
 ### `main_window.py`
 - Обработка в `threading.Thread` (daemon)
 - UI-обновления через `self.after(0, ...)`
-- При старте: `load_settings()` → `set_locale()` → `_build_ui()` → `_maximize_window()` (развёрнуто на весь экран)
+- При старте: `load_settings()` → `set_locale()` → `_build_ui()` → `_present_window()` (`withdraw` → `after_idle` → `geometry 840×620` по центру экрана → `deiconify` → `_setup_drag_drop`)
 - Footer: селектор **языка интерфейса** (English / Русский / …) + кнопка «Log»
 - `_apply_locale()` — обновление текстов без перезапуска; `_on_ui_locale_change()` и `_persist_settings()` сохраняют `settings.json`
 - Кнопка **«Отмена»** — `CancellationToken` в worker-потоке; `_on_cancelled()` без диалога ошибки
 - Фоновый canvas: `_on_bg_canvas_configure` / `_ensure_atmosphere_items` / `_update_accent_pulse` — без `delete("all")` на каждый кадр
 - `_ffmpeg_ok` — блокирует старт без ffmpeg
-- **Drag-and-drop** видео: `windnd.hook_dropfiles` — все валидные файлы **добавляются в очередь**
+- **Drag-and-drop** видео: `windnd.hook_dropfiles` на root и `_drop` (`force_unicode=True`) — хук ставится **после** показа окна в `_present_window`, не в `__init__`; ошибки setup → `log_exception("drag_drop_setup")`; все валидные файлы **добавляются в очередь**
 - **Очередь видео**: `_queue: list[Path]`, список в UI, multi-select в диалоге выбора
 - **Пакетная обработка**: «Создать субтитры» → `askdirectory` → preflight (файлы существуют, есть аудио) → `build_jobs` → последовательный `_launch_pipeline`; при ошибке или отмене — **вся очередь останавливается**
 - **ETA**: `EtaEstimator` в `_apply_progress`, метка в `StageProgressPanel` (`progress.eta_remaining`, позиция `File N / M`)
@@ -284,7 +284,7 @@ dist/SubForge/
     ffprobe.exe
 ```
 
-- Spec: [`SubForge.spec`](../SubForge.spec) — onedir, `collect_all` для torch/ctranslate2/speechbrain
+- Spec: [`SubForge.spec`](../SubForge.spec) — onedir, `collect_submodules("app")` (импорты в `launch.py` внутри `main()`), `collect_all` для torch/ctranslate2/speechbrain
 - Скрипт: `powershell -ExecutionPolicy Bypass -File .\build_exe.ps1` (CUDA torch cu124, затем PyInstaller, копия ffmpeg в `dist/SubForge/bin/`)
 - Ярлык release: `create_shortcut_release.ps1`; `create_shortcut.ps1` предпочитает exe из dist, иначе dev
 - Модели Whisper/SpeechBrain **не** в exe — кэш `%LOCALAPPDATA%` как в dev
@@ -292,7 +292,7 @@ dist/SubForge/
 
 ## UI (`app/ui/`)
 
-- Окно: при старте **развёрнуто на весь экран** (`state("zoomed")`), `minsize` 800×580; `CTkScrollableFrame` для малых экранов
+- Окно: при старте **скрыто до готовности layout** (`withdraw`), затем показывается **840×620 по центру экрана** (`after_idle` → `_present_window` → `deiconify`); `minsize` 800×580; `CTkScrollableFrame` для малых экранов
 - Тема: тёмно-синий/графит, акцент `#3DDC97` (`theme.py`)
 - Декоративный фон: `tk.Canvas` под контентом (`place` на весь shell); `<Configure>` только на canvas (не на root) — перерисовка при **resize**, не при drag; элементы canvas переиспользуются, пульсация верхней линии через `itemconfig`
 - Статусы: модель (badge + overview), **GPU/CPU** (`hardware.py`), ffmpeg (отдельная строка)

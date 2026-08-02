@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.services.engines import DEFAULT_ENGINE_ID, ENGINES
 from app.services.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES
+from app.services.output_formats import DEFAULT_OUTPUT_FORMAT, normalize_output_format
 from app.services.subtitle_format import DEFAULT_MAX_LINES, MAX_MAX_LINES, MIN_MAX_LINES
 
 _VALID_LANGUAGE_CODES = frozenset({"en", "de", "fr", "it", "ja", "ru", "auto"})
@@ -24,6 +25,7 @@ class AppSettings:
     max_subtitle_lines: int = DEFAULT_MAX_LINES
     separate_speakers: bool = True
     hide_non_speech: bool = False
+    output_format: str = DEFAULT_OUTPUT_FORMAT
 
 
 def _settings_path() -> Path:
@@ -66,6 +68,9 @@ def _normalize_settings(data: dict) -> AppSettings:
         max_subtitle_lines=max_subtitle_lines,
         separate_speakers=bool(data.get("separate_speakers", defaults.separate_speakers)),
         hide_non_speech=bool(data.get("hide_non_speech", defaults.hide_non_speech)),
+        output_format=normalize_output_format(
+            str(data.get("output_format", defaults.output_format))
+        ),
     )
 
 

@@ -32,6 +32,20 @@ class BatchQueueTests(unittest.TestCase):
             result = resolve_output_path(output_dir, Path("film.mp4"), reserved)
             self.assertEqual(result, output_dir / "film_subtitles_2.mp4")
 
+    def test_resolve_output_path_mkv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            result = resolve_output_path(output_dir, Path("film.mp4"), output_format="mkv")
+            self.assertEqual(result, output_dir / "film_subtitles.mkv")
+
+    def test_build_jobs_mkv_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            inputs = [Path("a.mp4"), Path("b.mkv")]
+            jobs = build_jobs(inputs, output_dir, output_format="mkv")
+            self.assertEqual(jobs[0].output_video.name, "a_subtitles.mkv")
+            self.assertEqual(jobs[1].output_video.name, "b_subtitles.mkv")
+
     def test_build_jobs_preserves_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
