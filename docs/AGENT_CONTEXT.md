@@ -5,7 +5,7 @@
 
 ## Назначение
 
-**SubForge** — десктоп-приложение для Windows. Пользователь выбирает видео → локально распознаётся речь (Whisper) → субтитры **вшиваются в MP4** как soft-дорожка (`mov_text`). Отдельный `.srt` пользователю не отдаётся (временный файл только в `%TEMP%`).
+**SubForge** — десктоп-приложение для Windows. Пользователь выбирает видео → локально распознаётся речь (Whisper) → субтитры **вшиваются в выходной файл** (по умолчанию MP4) как soft-дорожка или burn-in (WebM). Отдельный `.srt` пользователю не отдаётся (временный файл только в `%TEMP%`).
 
 Целевой сценарий: **японские фильмы**, дословная расшифровка **без цензуры/фильтрации текста**, всё **локально**.
 
@@ -32,6 +32,7 @@ addSub/
   requirements-build.txt  # pyinstaller (только для сборки)
   README.md               # для пользователя
   docs/AGENT_CONTEXT.md   # этот файл — для агента
+  setup.ps1               # venv + pip + ffmpeg + ярлык (один шаг)
   install_ffmpeg.ps1      # winget + копия в bin/
   create_shortcut.ps1     # SubForge.lnk (проект + рабочий стол)
   bin/                    # ffmpeg.exe, ffprobe.exe (не в git)
@@ -62,7 +63,8 @@ addSub/
       eta.py              # EtaEstimator, format_eta_duration — ETA в UI
       batch_queue.py      # BatchJob, build_jobs, resolve_output_path
       model_status.py     # проверка/скачивание моделей HF
-      ffmpeg_service.py   # ffmpeg, прогресс из stderr
+      ffmpeg_service.py   # ffmpeg, прогресс из stderr, mux по профилю формата
+      output_formats.py   # профили MP4/MKV/MOV/M4V/AVI/WebM/WMV
       subtitle_format.py  # объединение фрагментов, лимит строк на экране
       subtitle_timing.py  # нормализация end: не показывать субтитры в тишине
       non_speech_filter.py # фильтрация сегментов без слов ([laughter], ♪…)
@@ -90,9 +92,9 @@ flowchart TD
   diarize --> format[format_subtitles gap-aware]
   format --> timing[normalize_subtitle_timing]
   timing --> srt[Временный SRT в TEMP]
-  srt --> mux[ffmpeg: mux mov_text в MP4]
+  srt --> mux[ffmpeg: mux по профилю формата]
   mux --> cleanup[Удаление TEMP]
-  cleanup --> save[Сохранение MP4]
+  cleanup --> save[Сохранение видео]
 ```
 
 ### Этапы прогресса (`app/services/progress.py`)
@@ -138,6 +140,7 @@ flowchart TD
 - Параметр `max_subtitle_lines` (по умолчанию **2**) — передаётся в форматирование SRT
 - Параметр `separate_speakers` (по умолчанию **true**) — различение голосов перед форматированием
 - Параметр `hide_non_speech` (по умолчанию **false**) — удаление сегментов Whisper без слов (`[laughter]`, `[sigh]`, `♪` и т.п.); после transcribe, до diarization
+- Параметр `output_format` (по умолчанию **mp4**) — профиль контейнера для mux
 - Параметр `cancel: Optional[CancellationToken]` в `process()` — cooperative cancellation
 - Колбэк: `Callable[[ProgressSnapshot], None]`
 - Возвращает `PipelineResult(output_path, segment_count)`
@@ -198,7 +201,7 @@ flowchart TD
 
 ### `settings.py`
 - `%LOCALAPPDATA%\SubForge\settings.json` (fallback `~/.subforge/settings.json`)
-- Поля: `ui_locale`, `engine_id`, `speech_language`, `subtitle_language`, `max_subtitle_lines`, `separate_speakers`, `hide_non_speech`
+- Поля: `ui_locale`, `engine_id`, `speech_language`, `subtitle_language`, `max_subtitle_lines`, `separate_speakers`, `hide_non_speech`, `output_format`
 - Хранятся **коды/id**, не локализованные подписи UI; невалидные значения нормализуются при загрузке
 - Сохранение при изменении любого параметра в UI (`_persist_settings()` в `main_window.py`)
 - `load_settings()` / `save_settings()`
@@ -206,7 +209,7 @@ flowchart TD
 ### `cancellation.py`
 - `CancellationToken` — флаг отмены; `request_cancel()`, `check()` (raises `PipelineCancelledError`)
 - Проверки между этапами пайплайна, в циклах Whisper/diarization и в `_run_with_progress` (kill ffmpeg)
-- При отмене во время mux — частичный MP4 удаляется в `pipeline.process()`
+- При отмене во время mux — частичный выходной файл удаляется в `pipeline.process()`
 
 ### `ffmpeg_service.py`
 - Поиск: `bin/ffmpeg.exe` → PATH → WinGet Packages
@@ -216,7 +219,10 @@ flowchart TD
 - Параметр `audio_source` в `pipeline.process()` — звук из другого файла, субтитры в `input_video`
 - `_short_ffmpeg_error()` — короткое сообщение вместо полного stderr ffmpeg
 - `_run_with_progress()` — парсит `time=HH:MM:SS.ms` из stderr; при `cancel.is_cancelled` — `proc.kill()`
-- `mux_soft_subtitles()` — mov_text с `-disposition:s:0 default+forced` (автовключение в плеере)
+- `mux_subtitles()` — mux по `OutputFormatProfile` из `output_formats.py`
+- `mux_soft_subtitles()` — обёртка для MP4 (совместимость)
+- Soft: MP4/M4V/MOV → `mov_text`; MKV/AVI/WMV → `srt`; copy → fallback encode
+- WebM: burn-in через `-vf subtitles=...`, VP9 + Opus (отдельной дорожки нет)
 - `get_media_duration()` — ffprobe рядом с ffmpeg
 - Таймауты: проверка 12с, команды 600с
 
@@ -234,9 +240,14 @@ flowchart TD
 - `EtaEstimator` — линейная ETA по `overall` (порог: overall ≥ 3%, elapsed ≥ 10 с)
 - `format_eta_duration(seconds)` — локализованная строка для UI
 
+### `output_formats.py`
+- `OutputFormatProfile` — расширение, режим (`soft` / `burn_in`), codec субтитров, fallback-кодеки
+- `OUTPUT_FORMAT_ORDER`: mp4, mkv, mov, m4v, avi, webm, wmv; default **mp4**
+- `get_profile()`, `resolve_extension()`, UI-метки через `t("output_format.*")`
+
 ### `batch_queue.py`
 - `BatchJob` — `input_video`, `output_video`, опционально `audio_source`
-- `resolve_output_path(output_dir, input_video, reserved?)` — `{stem}_subtitles.mp4`, суффикс `_2` при коллизии
+- `resolve_output_path(..., output_format?)` — `{stem}_subtitles.{ext}`, суффикс `_2` при коллизии
 - `build_jobs(inputs, output_dir)` — список job для последовательной обработки
 
 ### `runtime_paths.py`
@@ -288,6 +299,7 @@ dist/SubForge/
 - Зона выбора файла: кнопка «Выбрать видео» (multi), **перетаскивание** одного или нескольких файлов, список очереди с удалением
 - Прогресс: общий `%`, этапы, **ETA** текущего файла, позиция в очереди «Файл N / M»
 - Кнопка «Скачать» — в строке с выбором движка
+- Настройка **«Формат выхода»** — MP4 (default), MKV, MOV, M4V, AVI, WebM, WMV; подсказки для WebM и AVI/WMV
 - Настройка **«Строк субтитров на экране»** (1–4, по умолчанию 2) — под движком и языками
 - Селекторы **«Язык речи»** и **«Язык субтитров»** — в правой колонке настроек
 - Переключатель **«Различать говорящих»** — разные голоса на разных строках, без подписей
@@ -304,14 +316,16 @@ cd c:\samson\addSub
 python main.py
 ```
 
+Быстрая установка: `setup.ps1` (venv + pip + ffmpeg + ярлык); `-Recreate` — пересоздать `.venv`  
 Ярлык: `create_shortcut.ps1` → `SubForge.lnk`  
 Release exe: `build_exe.ps1` → `dist\SubForge\SubForge.exe`  
 ffmpeg: `install_ffmpeg.ps1`
 
 ## Ограничения продукта
 
-- Soft subs (`mov_text`) — дорожка помечена `default+forced` для автопоказа в VLC/PotPlayer; «Кино и ТВ» Windows — слабо
-- Выход всегда **MP4**
+- Soft subs (`mov_text` / `srt`) — дорожка помечена `default+forced` для автопоказа в VLC/PotPlayer; «Кино и ТВ» Windows — слабо
+- **WebM** — только burn-in (субтитры в кадре), soft-дорожка в контейнере невозможна
+- Выход по умолчанию **MP4**; формат выбирается в UI и сохраняется в settings
 - Первый запуск «Мощного» — ~3 ГБ модель; «Сбалансированного» — ~1.5 ГБ (интернет один раз)
 - Whisper переводит **только на английский** (`task="translate"`); другие пары языков не поддерживаются
 
@@ -330,9 +344,9 @@ ffmpeg: `install_ffmpeg.ps1`
 | Фильтрация эмоциональных звуков | `non_speech_filter.py`, `pipeline.py`, `main_window.py`, `app/locale/`, README, этот файл |
 | Различение говорящих | `diarization.py`, `subtitle_format.py`, `pipeline.py`, `requirements.txt`, README, этот файл |
 | Логирование ошибок | `app_log.py`, `log_viewer.py`, `main_window.py`, `main.py`, `launch.py`, README, этот файл |
-| ffmpeg поведение | `ffmpeg_service.py`, `install_ffmpeg.ps1`, README |
+| ffmpeg поведение / форматы выхода | `ffmpeg_service.py`, `output_formats.py`, `pipeline.py`, `batch_queue.py`, `install_ffmpeg.ps1`, README, этот файл |
 | Зависимости | `requirements.txt` (+ `windnd` для DnD на Windows), README |
-| Ярлык / запуск | `launch.py`, `create_shortcut.ps1`, `create_shortcut_release.ps1`, README |
+| Ярлык / запуск / setup | `setup.ps1`, `launch.py`, `create_shortcut.ps1`, `create_shortcut_release.ps1`, README |
 | Standalone exe / PyInstaller | `SubForge.spec`, `build_exe.ps1`, `runtime_paths.py`, `ffmpeg_service.py`, `i18n.py`, README, этот файл |
 | Поведение Whisper / языки | `languages.py`, `transcription.py`, `pipeline.py`, `main_window.py`, README, этот файл |
 

@@ -1,10 +1,10 @@
 # SubForge
 
-> Local speech recognition → soft subtitles embedded in MP4 · [Whisper](https://github.com/openai/whisper) · Windows
+> Local speech recognition → soft subtitles in video · [Whisper](https://github.com/openai/whisper) · Windows
 
-**SubForge** is a Windows desktop app that transcribes speech with OpenAI Whisper ([faster-whisper](https://github.com/SYSTRAN/faster-whisper)) and muxes subtitles into MP4 as a soft track. Everything runs on your machine — no uploads, no word filtering. Subtitles auto-enable in VLC and PotPlayer.
+**SubForge** is a Windows desktop app that transcribes speech with OpenAI Whisper ([faster-whisper](https://github.com/SYSTRAN/faster-whisper)) and muxes subtitles into video (default **MP4**) as a soft track. Everything runs on your machine — no uploads, no word filtering. Subtitles auto-enable in VLC and PotPlayer.
 
-Pick a video → speech is recognized locally → subtitles are **embedded inside** the MP4 as a separate track. No standalone `.srt` file is created or left behind.
+Pick a video → speech is recognized locally → subtitles are **embedded inside** the output file as a separate track (or burned in for WebM). No standalone `.srt` file is created or left behind.
 
 ## Why SubForge?
 
@@ -12,7 +12,7 @@ Most Whisper tools export a separate `.srt` file. SubForge goes further:
 
 | | Typical Whisper GUI | SubForge |
 |---|---------------------|----------|
-| Output | `.srt` on disk | Soft subs **inside MP4** |
+| Output | `.srt` on disk | Soft subs **inside video** (MP4/MKV/…) |
 | Privacy | Often cloud-based | **100% local** on your PC |
 | Playback | Manual load in player | **Auto-enable** in VLC / PotPlayer |
 | Dialog | Single block of text | **Speaker separation** — one line per voice |
@@ -23,7 +23,8 @@ Built for films and long-form video: batch queue, GPU acceleration (NVIDIA CUDA)
 ## Features
 
 - **Fully local** — video never leaves your PC
-- **Soft subtitles** muxed into MP4 (`mov_text`), marked default for auto-display
+- **Soft subtitles** muxed into MP4/MKV/MOV/M4V/AVI/WMV; **WebM** uses burn-in (no separate track)
+- **Output format selector** — MP4 (default), MKV, MOV, M4V, AVI, WebM, WMV
 - **Three Whisper engines** — from fast (`base`) to maximum accuracy (`large-v3`)
 - **Speaker separation** — different voices on separate lines (no "Speaker 1" labels)
 - **Batch processing** — queue multiple videos with the same settings
@@ -59,33 +60,32 @@ Verify:
 ffmpeg -version
 ```
 
-## Installation
+## Quick setup
+
+**Clone + install (one line):**
 
 ```powershell
-git clone https://github.com/YOUR_USERNAME/subforge.git
-cd subforge
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+git clone https://github.com/alexsams123456/subforge.git subforge; cd subforge; powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+**Already cloned:**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+`setup.ps1` creates `.venv`, installs dependencies, copies ffmpeg to `bin\`, and adds `SubForge.lnk` on the desktop.
+
+**Recreate venv from scratch:**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Recreate
 ```
 
 On first run, the Whisper model downloads automatically (internet required once).  
 With **Separate speakers** enabled, a voice model (~90 MB) is also downloaded once.
 
-## Launch via shortcut
-
-After installing dependencies, create a shortcut:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\create_shortcut.ps1
-```
-
-This creates:
-
-- `SubForge.lnk` in the project folder
-- `SubForge.lnk` on the desktop
-
-Double-click to launch — no console window.
+Double-click **SubForge.lnk** to launch — no console window.
 
 ## Run from terminal
 
@@ -95,15 +95,15 @@ python main.py
 ```
 
 1. Click **Choose video** or **drag and drop** one or more videos into the window
-2. Pick **engine**, **languages**, **subtitle lines**, and toggles
-3. Click **Create subtitles** and choose an **output folder** — each file is saved as `{name}_subtitles.mp4`
+2. Pick **engine**, **languages**, **output format**, **subtitle lines**, and toggles
+3. Click **Create subtitles** and choose an **output folder** — each file is saved as `{name}_subtitles.{ext}` (e.g. `.mp4`, `.mkv`)
 4. During processing you see **progress**, **ETA**, and the file number in the queue; **Cancel** stops the entire queue
 5. Open the result in **VLC** or **PotPlayer**
 
 ## Batch processing
 
 - Add multiple videos via the file dialog (multi-select) or drag-and-drop
-- One output folder for the whole batch; names like `film_subtitles.mp4`, or `film_subtitles_2.mp4` on collision
+- One output folder for the whole batch; names like `film_subtitles.mkv`, or `film_subtitles_2.mkv` on collision (extension matches chosen format)
 - Files are processed **sequentially** with the same settings
 - If any file has **no audio track**, the batch **won't start** (preflight check before processing)
 - On **error** or **cancel**, remaining files are skipped
@@ -111,7 +111,21 @@ python main.py
 
 ## Saved settings
 
-Engine, speech and subtitle languages, lines per screen, **Separate speakers**, and **Hide non-speech sounds** are **remembered** between sessions. Stored in `%LOCALAPPDATA%\SubForge\settings.json` (along with UI language).
+Engine, speech and subtitle languages, **output format**, lines per screen, **Separate speakers**, and **Hide non-speech sounds** are **remembered** between sessions. Stored in `%LOCALAPPDATA%\SubForge\settings.json` (along with UI language).
+
+## Output format
+
+Choose **Output format** in settings before processing:
+
+| Format | Subtitles | Notes |
+|--------|-----------|-------|
+| **MP4** (default) | Soft track (`mov_text`) | Best compatibility with VLC / PotPlayer |
+| **MKV** | Soft track (`srt`) | Good for anime and films |
+| **MOV / M4V** | Soft track (`mov_text`) | Same family as MP4 |
+| **AVI / WMV** | Soft track (`srt`) | Works, but fewer players than MP4/MKV |
+| **WebM** | Burned into video | WebM has no soft subtitle track — subs are always visible |
+
+No extra codecs to download: bundled ffmpeg (via `install_ffmpeg.ps1`) includes everything needed.
 
 ## UI language
 
@@ -181,8 +195,8 @@ Copy log text when you need help diagnosing an issue.
 
 ## Notes
 
-- Output is always **MP4** with a `mov_text` subtitle track
-- Soft subs work reliably in VLC and PotPlayer; Windows **Movies & TV** has limited support
+- Default output is **MP4** with a `mov_text` subtitle track; other formats available in settings
+- Soft subs work reliably in VLC and PotPlayer; **WebM** always shows burned-in subs
 - Status bar shows **GPU or CPU** — Whisper uses NVIDIA CUDA automatically when available
 - **ETA** (estimated time remaining) is shown during processing
 - Long videos take longer on CPU
@@ -192,6 +206,7 @@ Copy log text when you need help diagnosing an issue.
 ```
 subforge/
   main.py
+  setup.ps1
   requirements.txt
   AGENTS.md              # brief instructions for AI agents
   docs/AGENT_CONTEXT.md  # full technical context (for agents)
@@ -213,10 +228,10 @@ dist/SubForge/
   bin/ffmpeg.exe, ffprobe.exe
 ```
 
+**One line** (after `setup.ps1`):
+
 ```powershell
-.\.venv\Scripts\Activate.ps1
-powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
-powershell -ExecutionPolicy Bypass -File .\create_shortcut_release.ps1
+powershell -ExecutionPolicy Bypass -File .\build_exe.ps1; powershell -ExecutionPolicy Bypass -File .\create_shortcut_release.ps1
 ```
 
 - Build **Windows only**; bundle includes **torch CUDA** (cu124) — size ~2–4 GB
