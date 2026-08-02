@@ -18,6 +18,7 @@ from app.services.progress import ProgressSnapshot, ProgressTracker
 from app.services.diarization import DiarizationError, assign_speakers
 from app.services.languages import validate_language_pair, whisper_task
 from app.services.non_speech_filter import filter_non_speech_segments
+from app.services.output_formats import DEFAULT_OUTPUT_FORMAT, get_profile, normalize_output_format
 from app.services.subtitle_format import DEFAULT_MAX_LINES, format_subtitles
 from app.services.subtitle_timing import normalize_subtitle_timing
 from app.services.transcription import TranscriptionError, WhisperTranscriber, write_srt
@@ -50,6 +51,7 @@ class SubtitlePipeline:
         max_subtitle_lines: int = DEFAULT_MAX_LINES,
         separate_speakers: bool = True,
         hide_non_speech: bool = False,
+        output_format: str = DEFAULT_OUTPUT_FORMAT,
         audio_source: Optional[Path] = None,
         on_progress: ProgressCallback = None,
         cancel: Optional[CancellationToken] = None,
@@ -60,8 +62,11 @@ class SubtitlePipeline:
         if not input_video.is_file():
             raise PipelineError(t("pipeline.file_not_found", path=input_video))
 
-        if output_video.suffix.lower() != ".mp4":
-            output_video = output_video.with_suffix(".mp4")
+        output_format = normalize_output_format(output_format)
+        profile = get_profile(output_format)
+        expected_suffix = profile.extension.lower()
+        if output_video.suffix.lower() != expected_suffix:
+            output_video = output_video.with_suffix(expected_suffix)
 
         pair_error = validate_language_pair(speech_language, subtitle_language)
         if pair_error:
@@ -188,11 +193,12 @@ class SubtitlePipeline:
                 tracker.update("mux", ratio, t("pipeline.mux_progress", pct=pct))
 
             try:
-                ffmpeg_service.mux_soft_subtitles(
+                ffmpeg_service.mux_subtitles(
                     input_video,
                     srt_path,
                     output_video,
                     language=subtitle_language,
+                    output_format=output_format,
                     on_progress=mux_progress,
                     cancel=cancel,
                 )

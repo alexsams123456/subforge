@@ -21,12 +21,19 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.max_subtitle_lines, 2)
         self.assertTrue(settings.separate_speakers)
         self.assertFalse(settings.hide_non_speech)
+        self.assertEqual(settings.output_format, "mp4")
 
     def test_normalize_legacy_ui_locale_only(self) -> None:
         settings = _normalize_settings({"ui_locale": "ru"})
         self.assertEqual(settings.ui_locale, "ru")
         self.assertEqual(settings.engine_id, "powerful")
         self.assertEqual(settings.speech_language, "en")
+
+    def test_normalize_output_format(self) -> None:
+        settings = _normalize_settings({"output_format": "mkv"})
+        self.assertEqual(settings.output_format, "mkv")
+        invalid = _normalize_settings({"output_format": "gif"})
+        self.assertEqual(invalid.output_format, "mp4")
 
     def test_normalize_invalid_values(self) -> None:
         settings = _normalize_settings(
@@ -64,6 +71,7 @@ class SettingsTests(unittest.TestCase):
             max_subtitle_lines=3,
             separate_speakers=False,
             hide_non_speech=True,
+            output_format="webm",
         )
         with patch("app.services.settings._settings_path") as mock_path:
             path = Path(self._temp_dir) / "settings.json"
