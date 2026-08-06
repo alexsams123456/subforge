@@ -27,6 +27,7 @@ Built for films and long-form video: batch queue, GPU acceleration (NVIDIA CUDA)
 - **Output format selector** — MP4 (default), MKV, MOV, M4V, AVI, WebM, WMV
 - **Three Whisper engines** — from fast (`base`) to maximum accuracy (`large-v3`)
 - **Speaker separation** — different voices on separate lines (no "Speaker 1" labels)
+- **Speech-synced cues** — subtitles appear only while words are spoken, not during silence
 - **Batch processing** — queue multiple videos with the same settings
 - **GPU acceleration** — NVIDIA CUDA when available
 - **Multilingual UI** — English, Russian, German, French, Italian, Japanese
@@ -206,6 +207,7 @@ If processing fails at the **Muxing subtitles** stage:
 ## Notes
 
 - Default output is **MP4** with a `mov_text` subtitle track; other formats available in settings
+- Subtitles are timed to **speech only** — they disappear shortly after the last word, not during silence
 - Large MP4 files (~4 GB+): ensure enough free space on the output drive (~2× file size during faststart), or use **MKV**
 - Soft subs work reliably in VLC and PotPlayer; **WebM** always shows burned-in subs
 - Status bar shows **GPU or CPU** — Whisper uses NVIDIA CUDA automatically when available

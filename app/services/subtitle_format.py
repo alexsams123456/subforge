@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from app.services.transcription import Segment
+from app.services.transcription import END_PADDING_SEC, Segment, display_end
 
 DEFAULT_MAX_LINES = 2
 MIN_MAX_LINES = 1
@@ -16,6 +16,11 @@ _CJK_LANGS = frozenset({"ja", "zh", "ko", "zh-cn", "zh-tw"})
 _CJK_PUNCT = set("、。！？，．…：；")
 
 _WHITESPACE = re.compile(r"\s+")
+
+
+def join_text_parts(parts: list[str], language: str) -> str:
+    """Склеивает фрагменты текста с учётом языка (пробелы / CJK)."""
+    return _join_parts(parts, language)
 
 
 def chars_per_line(language: str) -> int:
@@ -92,6 +97,12 @@ def _has_speakers(segments: list[Segment]) -> bool:
     return any(seg.speaker is not None for seg in segments)
 
 
+def _segment_speech_end(seg: Segment) -> float:
+    if seg.speech_end is not None:
+        return seg.speech_end
+    return max(seg.end - END_PADDING_SEC, seg.start)
+
+
 def _gap_too_large(prev_end: float, next_start: float) -> bool:
     return next_start - prev_end > MAX_MERGE_GAP_SEC
 
@@ -105,13 +116,15 @@ def _merge_same_speaker_segments(segments: list[Segment], language: str) -> list
     merged: list[Segment] = []
     parts = [ordered[0].text]
     start = ordered[0].start
-    end = ordered[0].end
+    speech_end = _segment_speech_end(ordered[0])
+    end = display_end(speech_end)
     speaker = ordered[0].speaker
 
     for seg in ordered[1:]:
         if not _gap_too_large(end, seg.start):
             parts.append(seg.text)
-            end = max(end, seg.end)
+            speech_end = max(speech_end, _segment_speech_end(seg))
+            end = display_end(speech_end)
             continue
 
         merged.append(
@@ -120,11 +133,13 @@ def _merge_same_speaker_segments(segments: list[Segment], language: str) -> list
                 end=end,
                 text=_join_parts(parts, language),
                 speaker=speaker,
+                speech_end=speech_end,
             )
         )
         parts = [seg.text]
         start = seg.start
-        end = seg.end
+        speech_end = _segment_speech_end(seg)
+        end = display_end(speech_end)
 
     merged.append(
         Segment(
@@ -132,6 +147,7 @@ def _merge_same_speaker_segments(segments: list[Segment], language: str) -> list
             end=end,
             text=_join_parts(parts, language),
             speaker=speaker,
+            speech_end=speech_end,
         )
     )
     return merged
@@ -144,13 +160,15 @@ def _collapse_same_speaker(segments: list[Segment], language: str) -> list[Segme
     collapsed: list[Segment] = []
     parts = [segments[0].text]
     start = segments[0].start
-    end = segments[0].end
+    speech_end = _segment_speech_end(segments[0])
+    end = display_end(speech_end)
     speaker = segments[0].speaker
 
     for seg in segments[1:]:
         if seg.speaker == speaker and not _gap_too_large(end, seg.start):
             parts.append(seg.text)
-            end = seg.end
+            speech_end = max(speech_end, _segment_speech_end(seg))
+            end = display_end(speech_end)
             continue
 
         collapsed.append(
@@ -159,11 +177,13 @@ def _collapse_same_speaker(segments: list[Segment], language: str) -> list[Segme
                 end=end,
                 text=_join_parts(parts, language),
                 speaker=speaker,
+                speech_end=speech_end,
             )
         )
         parts = [seg.text]
         start = seg.start
-        end = seg.end
+        speech_end = _segment_speech_end(seg)
+        end = display_end(speech_end)
         speaker = seg.speaker
 
     collapsed.append(
@@ -172,6 +192,7 @@ def _collapse_same_speaker(segments: list[Segment], language: str) -> list[Segme
             end=end,
             text=_join_parts(parts, language),
             speaker=speaker,
+            speech_end=speech_end,
         )
     )
     return collapsed
@@ -189,7 +210,8 @@ def _merge_consecutive(
     merged: list[Segment] = []
     parts = [segments[0].text]
     start = segments[0].start
-    end = segments[0].end
+    speech_end = _segment_speech_end(segments[0])
+    end = display_end(speech_end)
     speaker = segments[0].speaker
 
     for seg in segments[1:]:
@@ -200,11 +222,13 @@ def _merge_consecutive(
                     end=end,
                     text=_join_parts(parts, language),
                     speaker=speaker,
+                    speech_end=speech_end,
                 )
             )
             parts = [seg.text]
             start = seg.start
-            end = seg.end
+            speech_end = _segment_speech_end(seg)
+            end = display_end(speech_end)
             speaker = seg.speaker
             continue
 
@@ -214,7 +238,8 @@ def _merge_consecutive(
             and _fits_in_lines(trial, max_lines, cpl, language)
         ):
             parts.append(seg.text)
-            end = seg.end
+            speech_end = max(speech_end, _segment_speech_end(seg))
+            end = display_end(speech_end)
         else:
             merged.append(
                 Segment(
@@ -222,11 +247,13 @@ def _merge_consecutive(
                     end=end,
                     text=_join_parts(parts, language),
                     speaker=speaker,
+                    speech_end=speech_end,
                 )
             )
             parts = [seg.text]
             start = seg.start
-            end = seg.end
+            speech_end = _segment_speech_end(seg)
+            end = display_end(speech_end)
 
     merged.append(
         Segment(
@@ -234,6 +261,7 @@ def _merge_consecutive(
             end=end,
             text=_join_parts(parts, language),
             speaker=speaker,
+            speech_end=speech_end,
         )
     )
     return merged
@@ -325,9 +353,10 @@ def _group_by_speaker_lines(
         grouped.append(
             Segment(
                 start=min(item.start for item in cluster),
-                end=max(item.end for item in cluster),
+                end=display_end(max(_segment_speech_end(item) for item in cluster)),
                 text="\n".join(lines),
                 speaker=None,
+                speech_end=max(_segment_speech_end(item) for item in cluster),
             )
         )
 
@@ -353,49 +382,46 @@ def _split_long_segment(
 
     if len(blocks) <= 1:
         display = blocks[0] if blocks else text
+        speech_end = _segment_speech_end(segment)
         return [
             Segment(
                 start=segment.start,
-                end=segment.end,
+                end=display_end(speech_end),
                 text=display,
                 speaker=segment.speaker,
+                speech_end=speech_end,
             )
         ]
 
     total_chars = sum(len(b.replace("\n", "")) for b in blocks)
-    duration = max(segment.end - segment.start, 0.05)
+    speech_end = _segment_speech_end(segment)
+    duration = max(speech_end - segment.start, 0.05)
     t_start = segment.start
     result: list[Segment] = []
 
     for idx, block in enumerate(blocks):
         block_chars = len(block.replace("\n", ""))
         if idx == len(blocks) - 1:
-            t_end = segment.end
+            block_speech_end = speech_end
         elif total_chars > 0:
             share = block_chars / total_chars
-            t_end = min(t_start + duration * share, segment.end)
+            block_speech_end = min(t_start + duration * share, speech_end)
         else:
-            t_end = segment.end
+            block_speech_end = speech_end
 
-        if t_end <= t_start:
-            t_end = min(t_start + 0.05, segment.end)
+        if block_speech_end <= t_start:
+            block_speech_end = min(t_start + 0.05, speech_end)
         result.append(
             Segment(
                 start=t_start,
-                end=t_end,
+                end=display_end(block_speech_end),
                 text=block,
                 speaker=segment.speaker,
+                speech_end=block_speech_end,
             )
         )
-        t_start = t_end
+        t_start = display_end(block_speech_end)
 
-    if result:
-        result[-1] = Segment(
-            start=result[-1].start,
-            end=segment.end,
-            text=result[-1].text,
-            speaker=segment.speaker,
-        )
     return result
 
 

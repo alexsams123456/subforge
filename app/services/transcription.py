@@ -16,29 +16,60 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class WordTiming:
+    text: str
+    start: float
+    end: float
+
+
+@dataclass
 class Segment:
     start: float
     end: float
     text: str
     speaker: Optional[str] = None
+    speech_end: Optional[float] = None
+    words: Optional[list[WordTiming]] = None
 
 
 class TranscriptionError(RuntimeError):
     """Ошибка распознавания речи."""
 
 
-END_PADDING_SEC = 0.25
+END_PADDING_SEC = 0.08
 
 
-def _segment_timing_from_whisper(seg) -> tuple[float, float]:
+def display_end(speech_end: float) -> float:
+    """Видимый конец cue: конец речи + короткий padding."""
+    return speech_end + END_PADDING_SEC
+
+
+def _words_from_whisper(seg) -> list[WordTiming]:
+    raw = getattr(seg, "words", None) or []
+    result: list[WordTiming] = []
+    for item in raw:
+        text = (getattr(item, "word", None) or "").strip()
+        if not text:
+            continue
+        result.append(
+            WordTiming(
+                text=text,
+                start=float(item.start),
+                end=float(item.end),
+            )
+        )
+    return result
+
+
+def _segment_timing_from_whisper(seg) -> tuple[float, float, float]:
     """Границы сегмента по словам (точнее segment-level timestamps Whisper)."""
     start = float(seg.start)
-    end = float(seg.end)
-    words = getattr(seg, "words", None) or []
+    speech_end = float(seg.end)
+    words = _words_from_whisper(seg)
     if words:
-        start = float(words[0].start)
-        end = float(words[-1].end) + END_PADDING_SEC
-    return start, end
+        start = words[0].start
+        speech_end = words[-1].end
+    return start, display_end(speech_end), speech_end
 
 
 def _format_timestamp(seconds: float) -> str:
@@ -187,6 +218,7 @@ class WhisperTranscriber:
                 language=lang,
                 task=whisper_task,
                 vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500},
                 beam_size=preset.beam_size,
                 best_of=preset.best_of,
                 condition_on_previous_text=True,
@@ -209,8 +241,17 @@ class WhisperTranscriber:
             text = (seg.text or "").strip()
             if not text:
                 continue
-            start, end = _segment_timing_from_whisper(seg)
-            results.append(Segment(start=start, end=end, text=text))
+            start, end, speech_end = _segment_timing_from_whisper(seg)
+            words = _words_from_whisper(seg)
+            results.append(
+                Segment(
+                    start=start,
+                    end=end,
+                    text=text,
+                    speech_end=speech_end,
+                    words=words or None,
+                )
+            )
             if tracker and duration > 0:
                 ratio = min(max(float(seg.end) / duration, 0.0), 1.0)
                 pct = int(ratio * 100)

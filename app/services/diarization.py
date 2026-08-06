@@ -208,7 +208,14 @@ def assign_speakers(
         if tracker:
             tracker.complete("diarize", t("diarization.one_speaker"))
         return [
-            Segment(start=s.start, end=s.end, text=s.text, speaker="0")
+            Segment(
+                start=s.start,
+                end=s.end,
+                text=s.text,
+                speaker="0",
+                speech_end=s.speech_end,
+                words=s.words,
+            )
             for s in segments
         ]
 
@@ -234,6 +241,8 @@ def assign_speakers(
             end=seg.end,
             text=seg.text,
             speaker=str(label),
+            speech_end=seg.speech_end,
+            words=seg.words,
         )
         for seg, label in zip(segments, labels)
     ]

@@ -1012,6 +1012,14 @@ class MainWindow(ctk.CTk):
         if not self._queue:
             self._reset_progress(t("main.status.select_video"))
 
+    def _remove_from_queue_by_path(self, input_video: Path) -> None:
+        key = self._normalize_queue_path(input_video)
+        for index, path in enumerate(self._queue):
+            if self._normalize_queue_path(path) == key:
+                self._queue.pop(index)
+                self._refresh_queue_ui()
+                return
+
     def _update_queue_header(self) -> None:
         count = len(self._queue)
         self._file_title.configure(text=t("file.queue_count", count=count))
@@ -1323,6 +1331,8 @@ class MainWindow(ctk.CTk):
         self._batch_index = 0
         self._progress_queue_label = None
         self._cancel_token = None
+        self._queue.clear()
+        self._refresh_queue_ui()
         self._set_busy(False)
         self._btn_open.configure(state="normal")
         snapshot = ProgressTracker().mark_all_complete(
@@ -1425,6 +1435,8 @@ class MainWindow(ctk.CTk):
         self._output_path = output_path
 
         if self._batch_active and self._batch_jobs:
+            completed = self._batch_jobs[self._batch_index]
+            self._remove_from_queue_by_path(completed.input_video)
             self._batch_index += 1
             if self._batch_index < len(self._batch_jobs):
                 self._process_next_batch_job()

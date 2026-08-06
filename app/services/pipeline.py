@@ -21,6 +21,7 @@ from app.services.languages import validate_language_pair, whisper_task
 from app.services.non_speech_filter import filter_non_speech_segments
 from app.services.output_formats import DEFAULT_OUTPUT_FORMAT, get_profile, normalize_output_format, supports_soft_subtitles
 from app.services.subtitle_format import DEFAULT_MAX_LINES, format_subtitles
+from app.services.subtitle_phrases import split_segments_by_word_pauses
 from app.services.subtitle_timing import normalize_subtitle_timing
 from app.services.transcription import TranscriptionError, WhisperTranscriber, write_srt
 
@@ -172,12 +173,16 @@ class SubtitlePipeline:
                 cancel.check()
 
             tracker.begin("srt", t("pipeline.srt_start"))
+            segments = split_segments_by_word_pauses(segments, language=subtitle_language)
             display_segments = format_subtitles(
                 segments,
                 max_lines=max_subtitle_lines,
                 language=subtitle_language,
             )
-            display_segments = normalize_subtitle_timing(display_segments)
+            display_segments = normalize_subtitle_timing(
+                display_segments,
+                language=subtitle_language,
+            )
             write_srt(display_segments, srt_path)
 
             cue_count = len(display_segments)

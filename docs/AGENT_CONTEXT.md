@@ -42,7 +42,7 @@ addSub/
     test_cancellation.py     # unit-тесты отмены пайплайна
     test_hardware.py         # unit-тесты detect_acceleration
     test_eta.py                # unit-тесты EtaEstimator
-    test_batch_queue.py        # unit-тесты пакетной очереди
+    test_queue_lifecycle.py        # unit-тесты жизненного цикла очереди видео
     test_runtime_paths.py      # unit-тесты frozen/dev путей
     test_ffmpeg_mux_integration.py  # интеграционные тесты mux (в т.ч. video-only)
     test_ffmpeg_error.py         # unit-тесты _short_ffmpeg_error и compound mux errors
@@ -68,6 +68,7 @@ addSub/
       ffmpeg_service.py   # ffmpeg, прогресс из stderr, mux по профилю формата
       output_formats.py   # профили MP4/MKV/MOV/M4V/AVI/WebM/WMV
       subtitle_format.py  # объединение фрагментов, лимит строк на экране
+      subtitle_phrases.py # разбиение cue по паузам между словами
       subtitle_timing.py  # нормализация end: не показывать субтитры в тишине
       non_speech_filter.py # фильтрация сегментов без слов ([laughter], ♪…)
       languages.py        # UI-метки, коды языков, transcribe/translate, ffmpeg metadata
@@ -91,7 +92,8 @@ flowchart TD
   filter -->|да| drop[filter_non_speech_segments]
   filter -->|нет| diarize
   drop --> diarize[SpeechBrain: голоса по фрагментам]
-  diarize --> format[format_subtitles gap-aware]
+  diarize --> phraseSplit[split_segments_by_word_pauses]
+  phraseSplit --> format[format_subtitles gap-aware]
   format --> timing[normalize_subtitle_timing]
   timing --> srt[Временный SRT в TEMP]
   srt --> mux[ffmpeg: mux по профилю формата]
@@ -169,22 +171,35 @@ flowchart TD
 - `is_non_speech_text()` — сегмент только из звуковых меток (скобки, ♪, полноширинные скобки)
 - `filter_non_speech_segments()` — убирает такие сегменты из списка; смешанные («Да [laughter]») не трогает
 
+### `subtitle_phrases.py`
+- `split_segments_by_word_pauses()` — делит Whisper-сегменты на короткие cue по паузам между словами
+- `PHRASE_PAUSE_SEC = 0.45` — порог паузы между словами для нового cue
+- Вызывается в `pipeline.py` после diarization, **до** `format_subtitles`
+- Каждый cue: `start`/`speech_end` по первому/последнему слову группы; `speaker` наследуется
+
 ### `subtitle_format.py`
 - `format_subtitles()` — объединяет фрагменты Whisper, переносит текст и ограничивает строк на экране (1–4)
-- `MAX_MERGE_GAP_SEC = 1.2` — не сливать соседние фрагменты через паузу длиннее этого порога (убирает «висящие» субтитры в тишине)
+- `MAX_MERGE_GAP_SEC = 1.2` — не сливать соседние фрагменты через паузу длиннее этого порога
+- При merge/collapse/cluster `end` вычисляется из `speech_end + END_PADDING_SEC`, не из завышенного Whisper `seg.end`
 - Если задан `speaker`: реплики с **пересечением по времени** объединяются в один SRT-блок; разные говорящие — **отдельные строки** (`\n`), без подписей «Спикер 1»; не более `max_lines` строк (одна на говорящего; при 3+ — с наибольшим временем речи)
 - Один говорящий без перекрытия с другими — перенос длинной реплики до `max_lines` как раньше
 - `DEFAULT_MAX_LINES = 2`; для CJK ~18 символов в строке, для латиницы ~42
 
 ### `subtitle_timing.py`
-- `normalize_subtitle_timing()` — финальная обрезка `end` каждого cue до `next.start - MIN_CUE_GAP_SEC` (0.05 с)
+- `normalize_subtitle_timing()` — финальная обрезка `end`: не дольше `speech_end + END_PADDING_SEC` и до `next.start - MIN_CUE_GAP_SEC` (0.05 с)
+- Fallback для сегментов **без** `words`: если `speech_end` совпадает с сырым Whisper `end` и пауза > `MAX_SPEECH_SPAN_SEC` (18 с) при коротком тексте — оценка длительности по символам
+- Применяется ко **всем** cue, включая последний в файле
 - Вызывается в `pipeline.py` после `format_subtitles`, перед `write_srt`
 - Минимальная длительность cue: 0.05 с
 
 ### `transcription.py`
+- `WordTiming` — текст и границы одного слова Whisper
+- `Segment.words` — список слов с таймингами (для phrase split)
+- `Segment.speech_end` — фактический конец речи (конец последнего слова); `end` = `display_end(speech_end)`
 - `WhisperTranscriber` — ленивая загрузка модели
-- `word_timestamps=True`, `hallucination_silence_threshold=2.0` — точнее границы речи
-- `END_PADDING_SEC = 0.25` — короткая пауза после последнего слова (не мигать)
+- `word_timestamps=True`, `hallucination_silence_threshold=2.0`, `vad_parameters.min_silence_duration_ms=500` — точнее границы речи
+- `END_PADDING_SEC = 0.08` — короткий padding после последнего слова (~3 кадра при 24 fps)
+- `display_end(speech_end)` — единый расчёт видимого конца cue
 - Границы сегмента: по первому/последнему слову, если words доступны; иначе segment-level timestamps
 - Параметр `task`: `"transcribe"` или `"translate"` (перевод только на английский)
 - CUDA если доступна (`float16`), иначе CPU (`int8`)
@@ -274,8 +289,8 @@ flowchart TD
 - Фоновый canvas: `_on_bg_canvas_configure` / `_ensure_atmosphere_items` / `_update_accent_pulse` — без `delete("all")` на каждый кадр
 - `_ffmpeg_ok` — блокирует старт без ffmpeg
 - **Drag-and-drop** видео: `windnd.hook_dropfiles` только на **корневое окно** (`self`, `force_unicode=True`); хук ставится **после** показа окна в `_present_window`, не в `__init__`. Из WndProc — только `put_nowait` в `_drop_queue`; UI обновляется через `_poll_drop_queue()` каждые 100 ms. Ошибки setup → `log_exception("drag_drop_setup")`; валидные файлы **добавляются в очередь**
-- **Очередь видео**: `_queue: list[Path]`, список в UI, multi-select в диалоге выбора
-- **Пакетная обработка**: «Создать субтитры» → `askdirectory` → preflight (файлы существуют, есть аудио) → `build_jobs` → последовательный `_launch_pipeline`; при ошибке или отмене — **вся очередь останавливается**
+- **Очередь видео**: `_queue: list[Path]`, список в UI, multi-select в диалоге выбора; после **успешной** обработки файла он удаляется из `_queue` (`_remove_from_queue_by_path` в `_on_success`); по завершении всего пакета `_queue` очищается в `_on_batch_complete`
+- **Пакетная обработка**: «Создать субтитры» → `askdirectory` → preflight (файлы существуют, есть аудио) → `build_jobs` → последовательный `_launch_pipeline`; при ошибке или отмене — **вся очередь останавливается**, необработанные файлы **остаются в `_queue`** для повторного запуска
 - **ETA**: `EtaEstimator` в `_apply_progress`, метка в `StageProgressPanel` (`progress.eta_remaining`, позиция `File N / M`)
 - **Индикатор GPU/CPU**: `_accel_status`, `_check_acceleration_async`, `_apply_accel_status` (обновляется при смене языка UI)
 - Ярлык dev: `launch.py` + `.venv/Scripts/pythonw.exe`; release: `dist/SubForge/SubForge.exe`
@@ -346,8 +361,8 @@ ffmpeg: `install_ffmpeg.ps1`
 | Язык интерфейса / новая локаль | `i18n.py`, `settings.py`, `app/locale/`, `main_window.py`, README, этот файл |
 | Настройки пользователя (settings.json) | `settings.py`, `main_window.py`, `languages.py`, README, этот файл |
 | Отмена обработки | `cancellation.py`, `pipeline.py`, `ffmpeg_service.py`, `transcription.py`, `diarization.py`, `main_window.py`, `batch_queue.py`, `app/locale/`, README, этот файл |
-| Формат субтитров / строк на экране | `subtitle_format.py`, `subtitle_timing.py`, `pipeline.py`, `main_window.py`, этот файл |
-| Тайминги субтитров (gap merge, normalize) | `subtitle_format.py`, `subtitle_timing.py`, `transcription.py`, `pipeline.py`, `tests/test_subtitle_timing.py`, этот файл |
+| Формат субтитров / строк на экране | `subtitle_format.py`, `subtitle_phrases.py`, `subtitle_timing.py`, `pipeline.py`, `main_window.py`, этот файл |
+| Тайминги субтитров (gap merge, phrase split, normalize) | `subtitle_phrases.py`, `subtitle_format.py`, `subtitle_timing.py`, `transcription.py`, `pipeline.py`, `tests/test_subtitle_timing.py`, этот файл |
 | Фильтрация эмоциональных звуков | `non_speech_filter.py`, `pipeline.py`, `main_window.py`, `app/locale/`, README, этот файл |
 | Различение говорящих | `diarization.py`, `subtitle_format.py`, `pipeline.py`, `requirements.txt`, README, этот файл |
 | Логирование ошибок | `app_log.py`, `log_viewer.py`, `main_window.py`, `main.py`, `launch.py`, README, этот файл |
